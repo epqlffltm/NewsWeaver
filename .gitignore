@@ -1,0 +1,29 @@
+# .gitignore
+
+# Python virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Linters / type checker
+.ruff_cache/
+.mypy_cache/
+
+# IDE
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
