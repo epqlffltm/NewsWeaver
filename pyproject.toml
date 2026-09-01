@@ -1,10 +1,22 @@
 [project]
-name = "newsweaver"
+name = "news-weaver"
 version = "0.1.0"
-description = "Add your description here"
+description = "여러 소스에서 뉴스를 수집·요약하여 이메일로 전달하는 개인용 다이제스트 파이프라인"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi[standard]>=0.141.1",
     "feedparser>=6.0.14",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/news_weaver"]
