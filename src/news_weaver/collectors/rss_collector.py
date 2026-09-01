@@ -10,6 +10,10 @@ RSS 피드를 수집해 Article 목록으로 변환한다.
 import re
 from datetime import UTC, datetime, timedelta, timezone
 
+from news_weaver.domain.article import Article
+from news_weaver.pipeline.clean_text import clean_summary
+from news_weaver.pipeline.normalize import hash_url, normalize_url
+
 # RFC 822 계열 날짜 문자열의 끝에 오는 타임존 표기를 찾는다.
 # 예: "+0900", "-0500", "GMT", "Z"
 TIMEZONE_MARKER_PATTERN = re.compile(r"(?:[+-]\d{2}:?\d{2}|Z|[A-Z]{2,4})\s*$")
@@ -46,3 +50,42 @@ def to_utc_datetime(published_raw: str | None, published_parsed) -> datetime | N
 
     # 원본 시각이 그대로 남아 있으므로 KST로 간주해 변환한다
     return naive.replace(tzinfo=KST).astimezone(UTC)
+
+def _extract_author(entry) -> str | None:
+    """
+    작성자를 꺼낸다. 제공하지 않는 소스가 있어 없으면 None을 반환한다.
+    """
+    
+    author = entry.get("author")
+    if not author:
+        return None
+    return author.strip()
+
+def to_article(entry, source_name: str, collected_at: datetime) -> Article | None:
+    """
+    RSS 항목 하나를 Article로 변환한다.
+
+    제목이나 링크가 없는 항목은 식별과 요약이 불가능하므로 None을 반환한다.
+    한 건의 실패가 나머지 수집을 중단시키지 않도록, 예외 대신 None으로 알린다.
+    """
+    title = (entry.get("title") or "").strip()
+    link = (entry.get("link") or "").strip()
+
+    if not title or not link:
+        return None
+
+    normalized_url = normalize_url(link)
+
+    return Article(
+        source_name=source_name,
+        title=title,
+        url=link,
+        url_hash=hash_url(normalized_url),
+        collected_at=collected_at,
+        published_at=to_utc_datetime(
+            entry.get("published"),
+            entry.get("published_parsed"),
+        ),
+        author=_extract_author(entry),
+        summary=clean_summary(entry.get("summary")),
+    )
