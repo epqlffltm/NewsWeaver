@@ -10,6 +10,7 @@ RSS, 공공데이터 API, 오픈 API 등 어떤 소스에서 왔든 파이프라
 from dataclasses import dataclass
 from datetime import datetime
 
+
 @dataclass(frozen = True, slots = True)
 class Article:
     """
