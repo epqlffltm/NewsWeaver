@@ -10,12 +10,27 @@ RSS 피드의 실제 구조를 확인하기위해 사용하는 일회성 스크�
 import feedparser
 
 FEED_URLS = {
-    "연합뉴스": "https://www.yna.co.kr/rss/all.xml",
-    "한겨레_경제": "https://www.hani.co.kr/rss/economy/",
     "ZDNet_코리아": "https://feeds.feedburner.com/zdkorea",
+    "한겨레_경제": "https://www.hani.co.kr/rss/economy/",
+    "전자신문": "https://rss.etnews.com/Section901.xml",
+    "블로터": "https://www.bloter.net/rss/allArticle.xml",
+    "동아사이언스": "https://www.dongascience.com/rss/rss_all.xml",
 }
 
 INSPECTED_FIELDS = ("title", "link", "published", "updated" , "author", "summary")
+
+def summarize_field_health(entry) -> str:
+    """항목이 실제로 쓸 만한 필드를 갖췄는지 한 줄로 요약한다."""
+    has_parsed_date = entry.get("published_parsed") is not None
+    raw_summary = str(entry.get("summary", ""))
+    looks_like_html = raw_summary.strip().startswith("<")
+    
+    return (
+        f"날짜={'O' if has_parsed_date else 'X'} "
+        f"작성자={'O' if entry.get('author') else 'X'} "
+        f"요약={'HTML덩어리' if looks_like_html else 'O'}"
+    )
+
 
 def print_entry_fields(entry)->None:
     """항목 하나가 어떤 필드를 갖고 각 값이 어떤 모습인지 출력한다."""
@@ -29,6 +44,7 @@ def print_entry_fields(entry)->None:
             print(f"  {field_name:10}: {str(raw_value)[:130]}")
 
     print(f"  {'parsed':10}: {entry.get('published_parsed')}")
+    print(f"  {'상태':10}: {summarize_field_health(entry)}")
 
 
 def inspect_feed(source_name: str, feed_url: str, sample_size: int = 2) -> None:
