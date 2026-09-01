@@ -10,10 +10,13 @@ FastAPI가 아니라 CLI를 기본 진입점으로 둔다. 나중에 웹에서 �
 
 from datetime import UTC, datetime
 
+from dotenv import load_dotenv
+
 from news_weaver.collectors.result import CollectionResult
 from news_weaver.collectors.rss_collector import collect_all_feeds
 from news_weaver.collectors.sources import RSS_SOURCES
 
+load_dotenv()
 
 def print_source_report(result: CollectionResult) -> None:
     """소스 하나의 수집 결과를 한 줄로 출력한다."""

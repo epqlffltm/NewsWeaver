@@ -5,7 +5,11 @@ description = "여러 소스에서 뉴스를 수집·요약하여 이메일로 �
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.19.1",
     "feedparser>=6.0.14",
+    "psycopg[binary]>=3.3.5",
+    "python-dotenv>=1.2.3",
+    "sqlalchemy>=2.0.52",
 ]
 
 [dependency-groups]
