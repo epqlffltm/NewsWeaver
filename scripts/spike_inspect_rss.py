@@ -1,10 +1,11 @@
-# scripts/spike_inspect_rss.py
+# NewsWeaver/scripts/spike_inspect_rss.py
 
 """
-RSS 피드의 실제 구조를 확인하기위해 사용하는 일회성 스크립트
+RSS 피드의 실제 구조를 확인하기 위한 일회성 스파이크 스크립트.
 
 스키마와 도메인 모델을 설계하기 전에, 실제 피드가 어떤 필드를 제공하고
-어떤 값이 비어 있거나 형식이 제각각인지 눈으로 확인하는 것이 목적
+어떤 값이 비어 있거나 형식이 제각각인지 눈으로 확인하는 것이 목적이다.
+확인이 끝나면 삭제하며, 프로덕션 코드에서 임포트하지 않는다.
 """
 
 import feedparser
@@ -17,14 +18,17 @@ FEED_URLS = {
     "동아사이언스": "https://www.dongascience.com/rss/rss_all.xml",
 }
 
-INSPECTED_FIELDS = ("title", "link", "published", "updated" , "author", "summary")
+INSPECTED_FIELDS = ("title", "link", "published", "updated", "author", "summary")
+
 
 def summarize_field_health(entry) -> str:
-    """항목이 실제로 쓸 만한 필드를 갖췄는지 한 줄로 요약한다."""
+    """
+    항목이 실제로 쓸 만한 필드를 갖췄는지 한 줄로 요약한다.
+    """
     has_parsed_date = entry.get("published_parsed") is not None
     raw_summary = str(entry.get("summary", ""))
     looks_like_html = raw_summary.strip().startswith("<")
-    
+
     return (
         f"날짜={'O' if has_parsed_date else 'X'} "
         f"작성자={'O' if entry.get('author') else 'X'} "
@@ -32,10 +36,12 @@ def summarize_field_health(entry) -> str:
     )
 
 
-def print_entry_fields(entry)->None:
-    """항목 하나가 어떤 필드를 갖고 각 값이 어떤 모습인지 출력한다."""
+def print_entry_fields(entry) -> None:
+    """
+    항목 하나가 어떤 필드를 갖고 각 값이 어떤 모습인지 출력한다.
+    """
     print(f"\n  보유 필드: {sorted(entry.keys())}")
-    
+
     for field_name in INSPECTED_FIELDS:
         raw_value = entry.get(field_name)
         if raw_value is None:
@@ -48,7 +54,9 @@ def print_entry_fields(entry)->None:
 
 
 def inspect_feed(source_name: str, feed_url: str, sample_size: int = 2) -> None:
-    """피드를 파싱해 상위 몇 건의 구조를 출력한다."""
+    """
+    피드를 파싱해 상위 몇 건의 구조를 출력한다.
+    """
     parsed_feed = feedparser.parse(feed_url)
 
     print(f"\n{'=' * 70}")

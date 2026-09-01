@@ -1,4 +1,5 @@
-# src/news_weaver/domain/article.py
+# NewsWeaver/src/news_weaver/domain/article.py
+
 """
 수집된 기사 하나를 표현하는 도메인 모델.
 
@@ -11,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
-@dataclass(frozen = True, slots = True)
+@dataclass(frozen=True, slots=True)
 class Article:
     """
     정규화된 기사 하나.
@@ -19,30 +20,24 @@ class Article:
     시각 필드는 모두 타임존을 가진 UTC 기준이다. 소스마다 타임존 표기
     유무가 다르므로, 변환 책임은 이 모델이 아니라 수집기에 있다.
     """
-    
+
+    # 소스별 수집 건수 집계와 장애 감지의 근거가 된다
     source_name: str
-    """기사 수집 소스 이름"""
 
     title: str
-    """기사 제목"""
-    
     url: str
-    """기사 URL"""
-    
+
+    # 정규화된 URL의 해시. 중복 판정 키이며 DB 유니크 제약이 걸린다
     url_hash: str
-    """기사 URL의 해시값. 중복 수집 방지용"""
-    
+
+    # 발행 시각이 없는 소스가 있어(예: 한겨레), 정렬이 항상 기댈 수 있는
+    # 시각으로서 필수 필드로 둔다
     collected_at: datetime
-    """기사 수집 시각. UTC 기준"""
-    
+
     published_at: datetime | None = None
-    """기사 발행 시각. UTC 기준. 소스에 따라 없을 수 있음"""
-    
     author: str | None = None
-    """기사 작성자. 소스에 따라 없을 수 있음"""
-    
     summary: str | None = None
-    """기사 요약. 소스에 따라 없을 수 있음"""
-    
+
+    # 본문을 제공하는 소스만 채운다. 대부분은 None이며,
+    # 본문 추출 단계를 붙이기 전까지는 저장하지 않는다
     content: str | None = None
-    """기사 본문. 소스에 따라 없을 수 있음"""

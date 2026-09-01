@@ -1,5 +1,8 @@
-# tests/test_normalize.py
-"""URL 정규화 규칙이 의도대로 동작하는지 검증한다."""
+# NewsWeaver/tests/test_normalize.py
+
+"""
+URL 정규화 규칙이 의도대로 동작하는지 검증한다.
+"""
 
 import pytest
 
@@ -28,14 +31,18 @@ from news_weaver.pipeline.normalize import hash_url, normalize_url
         ("https://test.com/path?b=2&a=1", "https://test.com/path?a=1&b=2"),
 
         # 식별에 필요한 쿼리는 유지된다
-        ("https://zdnet.co.kr/view/?no=20260901082807","https://zdnet.co.kr/view?no=20260901082807"),
+        ("https://zdnet.co.kr/view/?no=20260901082807",
+         "https://zdnet.co.kr/view?no=20260901082807"),
     ],
 )
 def test_normalize_url(raw_url: str, expected: str) -> None:
     assert normalize_url(raw_url) == expected
-    
+
+
 def test_url_variants_share_same_hash() -> None:
-    """같은 기사의 URL 변형들은 하나의 해시로 모인다."""
+    """
+    같은 기사의 URL 변형들은 하나의 해시로 모인다.
+    """
     variants = [
         "https://zdnet.co.kr/view/?no=123",
         "http://ZDNet.co.kr/view?no=123",
@@ -47,7 +54,9 @@ def test_url_variants_share_same_hash() -> None:
 
 
 def test_different_articles_have_different_hashes() -> None:
-    """서로 다른 기사는 다른 해시를 가진다."""
+    """
+    서로 다른 기사는 다른 해시를 가진다.
+    """
     first = hash_url(normalize_url("https://zdnet.co.kr/view/?no=123"))
     second = hash_url(normalize_url("https://zdnet.co.kr/view/?no=456"))
     assert first != second
