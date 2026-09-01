@@ -1,0 +1,25 @@
+# NewsWeaver/docker-compose.yml
+# 로컬 개발용 PostgreSQL. pgvector 확장이 포함된 이미지를 사용한다.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: newsweaver-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # 한국어 정렬과 인코딩을 위한 초기화 옵션
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
