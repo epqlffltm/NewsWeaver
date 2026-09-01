@@ -8,10 +8,12 @@ import time
 from datetime import UTC, datetime
 
 from news_weaver.collectors.rss_collector import (
+    collect_all_feeds,
     collect_feed,
     to_article,
     to_utc_datetime,
 )
+from news_weaver.collectors.sources import RssSource
 
 
 def test_offset_marked_time_is_kept_as_utc() -> None:
@@ -153,3 +155,26 @@ def test_collect_feed_counts_skipped_entries(monkeypatch) -> None:
     assert result.is_healthy is True
     assert result.article_count == 1
     assert result.skipped_count == 2
+    
+def test_collect_all_feeds_keeps_failures(monkeypatch) -> None:
+    """
+    한 소스가 실패해도 나머지 소스의 수집 결과는 유지된다.
+    """
+    def fake_parse(url):
+        if "broken" in url:
+            return {"entries": [], "bozo_exception": "syntax error"}
+        return {"entries": [{"title": "기사", "link": "https://example.com/1"}]}
+
+    monkeypatch.setattr("news_weaver.collectors.rss_collector.feedparser.parse", fake_parse)
+
+    sources = (
+        RssSource("정상소스", "https://example.com/ok"),
+        RssSource("장애소스", "https://example.com/broken"),
+    )
+
+    results = collect_all_feeds(sources, COLLECTED_AT)
+
+    assert len(results) == 2
+    assert results[0].is_healthy is True
+    assert results[0].article_count == 1
+    assert results[1].is_healthy is False

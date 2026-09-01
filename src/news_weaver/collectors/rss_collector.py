@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import feedparser
 
 from news_weaver.collectors.result import CollectionResult
+from news_weaver.collectors.sources import RssSource
 from news_weaver.domain.article import Article
 from news_weaver.pipeline.clean_text import clean_summary
 from news_weaver.pipeline.normalize import hash_url, normalize_url
@@ -129,3 +130,19 @@ def collect_feed(
         articles=articles,
         skipped_count=skipped_count,
     )
+    
+def collect_all_feeds(
+    sources: tuple[RssSource, ...],
+    collected_at: datetime,
+) -> list[CollectionResult]:
+    """
+    여러 소스를 순회하며 수집한다.
+
+    한 소스의 장애가 다른 소스 수집을 막지 않도록, 실패도 결과의 일부로
+    담아 반환한다. 소스 수가 늘어 순차 수집이 느려지면 이 함수만
+    병렬 처리로 바꾸면 된다.
+    """
+    return [
+        collect_feed(source.name, source.url, collected_at)
+        for source in sources
+    ]
