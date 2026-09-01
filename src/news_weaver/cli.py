@@ -15,8 +15,12 @@ from dotenv import load_dotenv
 from news_weaver.collectors.result import CollectionResult
 from news_weaver.collectors.rss_collector import collect_all_feeds
 from news_weaver.collectors.sources import RSS_SOURCES
+from news_weaver.db.article_repository import ArticleRepository
+from news_weaver.db.engine import get_session_factory
+from news_weaver.domain.article import Article
 
 load_dotenv()
+
 
 def print_source_report(result: CollectionResult) -> None:
     """소스 하나의 수집 결과를 한 줄로 출력한다."""
@@ -32,37 +36,44 @@ def print_source_report(result: CollectionResult) -> None:
     print(line)
 
 
-def print_article_samples(result: CollectionResult, sample_count: int = 2) -> None:
-    """수집된 기사 중 몇 건을 상세히 출력한다."""
-    for article in result.articles[:sample_count]:
-        print(f"    제목   : {article.title[:50]}")
-        print(f"    발행   : {article.published_at}")
-        print(f"    작성자 : {article.author}")
-        print(f"    요약   : {str(article.summary)[:60]}")
-        print(f"    해시   : {article.url_hash[:16]}...")
-        print()
-
-
-def run_ingest() -> None:
-    """전체 소스를 수집하고 결과를 콘솔에 출력한다."""
-    collected_at = datetime.now(UTC)
-
-    print(f"수집 시각: {collected_at.isoformat()}\n")
-
+def collect_articles(collected_at: datetime) -> list[Article]:
+    """모든 소스를 수집하고 결과를 출력한 뒤, 기사들을 한 목록으로 모은다."""
     results = collect_all_feeds(RSS_SOURCES, collected_at)
 
+    articles: list[Article] = []
     for result in results:
         print_source_report(result)
-        print_article_samples(result)
+        articles.extend(result.articles)
 
-    total_articles = sum(result.article_count for result in results)
     unhealthy_sources = [r.source_name for r in results if not r.is_healthy]
-
-    print(f"{'=' * 60}")
-    print(f"총 수집: {total_articles}건 / 소스 {len(results)}개")
-
     if unhealthy_sources:
         print(f"장애 소스: {', '.join(unhealthy_sources)}")
+
+    return articles
+
+
+def store_articles(articles: list[Article]) -> int:
+    """기사들을 저장하고 새로 삽입된 건수를 반환한다."""
+    session_factory = get_session_factory()
+
+    with session_factory() as session:
+        repository = ArticleRepository(session)
+        inserted_count = repository.save_articles(articles)
+        session.commit()
+
+    return inserted_count
+
+def run_ingest() -> None:
+    """수집부터 저장까지 한 번의 배치를 실행한다."""
+    collected_at = datetime.now(UTC)
+    print(f"수집 시각: {collected_at.isoformat()}\n")
+
+    articles = collect_articles(collected_at)
+    inserted_count = store_articles(articles)
+
+    print(f"\n{'=' * 60}")
+    print(f"수집 {len(articles)}건 / 신규 저장 {inserted_count}건 ")
+    print(f"/ 중복 {len(articles) - inserted_count}건")
 
 
 if __name__ == "__main__":
