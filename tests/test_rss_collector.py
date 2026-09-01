@@ -7,7 +7,11 @@ RSS 피드의 시각 변환이 소스별 타임존 표기 차이를 올바르게
 import time
 from datetime import UTC, datetime
 
-from news_weaver.collectors.rss_collector import to_article, to_utc_datetime
+from news_weaver.collectors.rss_collector import (
+    collect_feed,
+    to_article,
+    to_utc_datetime,
+)
 
 
 def test_offset_marked_time_is_kept_as_utc() -> None:
@@ -114,3 +118,38 @@ def test_to_article_rejects_entry_without_link() -> None:
     entry = {"title": "제목만 있는 항목"}
 
     assert to_article(entry, "테스트", COLLECTED_AT) is None
+    
+    
+def test_collect_feed_marks_empty_feed_as_unhealthy(monkeypatch) -> None:
+    """항목이 하나도 없으면 장애로 표시한다. 조용한 실패를 감지하기 위함이다."""
+    
+    def fake_parse(url):
+        return {"entries": [], "bozo_exception": "syntax error"}
+    
+    monkeypatch.setattr("news_weaver.collectors.rss_collector.feedparser.parse", fake_parse)
+    
+    result = collect_feed("연합뉴스", "https://example.com/rss", COLLECTED_AT)
+    
+    assert result.is_healthy is False
+    assert result.article_count == 0
+    assert "syntax error" in result.error
+    
+def test_collect_feed_counts_skipped_entries(monkeypatch) -> None:
+    """변환할 수 없는 항목은 버리되 몇 건인지 기록한다."""
+    
+    def fake_parse(url):
+        return {
+            "entries": [
+                {"title": "정상 기사", "link": "https://example.com/1"},
+                {"title": "링크 없음"},
+                {"link": "https://example.com/3"},
+            ]
+        }
+        
+    monkeypatch.setattr("news_weaver.collectors.rss_collector.feedparser.parse", fake_parse)
+    
+    result = collect_feed("테스트", "https://example.com/rss", COLLECTED_AT)
+    
+    assert result.is_healthy is True
+    assert result.article_count == 1
+    assert result.skipped_count == 2

@@ -10,6 +10,9 @@ RSS 피드를 수집해 Article 목록으로 변환한다.
 import re
 from datetime import UTC, datetime, timedelta, timezone
 
+import feedparser
+
+from news_weaver.collectors.result import CollectionResult
 from news_weaver.domain.article import Article
 from news_weaver.pipeline.clean_text import clean_summary
 from news_weaver.pipeline.normalize import hash_url, normalize_url
@@ -88,4 +91,41 @@ def to_article(entry, source_name: str, collected_at: datetime) -> Article | Non
         ),
         author=_extract_author(entry),
         summary=clean_summary(entry.get("summary")),
+    )
+    
+def collect_feed(
+    source_name: str,
+    feed_url: str,
+    collected_at: datetime,
+) -> CollectionResult:
+    """
+    RSS 피드 하나를 수집해 Article 목록과 건강 상태를 함께 반환한다.
+
+    feedparser는 파싱에 실패해도 예외 대신 빈 결과를 돌려주므로,
+    항목 수가 0인 경우를 정상 상태와 구분해 기록한다.
+    """
+    parsed_feed = feedparser.parse(feed_url)
+    entries = parsed_feed.get("entries") or []
+
+    if not entries:
+        return CollectionResult(
+            source_name=source_name,
+            is_healthy=False,
+            error=str(parsed_feed.get("bozo_exception") or "항목이 없음"),
+        )
+
+    articles: list[Article] = []
+    skipped_count = 0
+
+    for entry in entries:
+        article = to_article(entry, source_name, collected_at)
+        if article is None:
+            skipped_count += 1
+            continue
+        articles.append(article)
+
+    return CollectionResult(
+        source_name=source_name,
+        articles=articles,
+        skipped_count=skipped_count,
     )
