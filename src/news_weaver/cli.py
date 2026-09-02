@@ -9,10 +9,9 @@ FastAPI가 아니라 CLI를 기본 진입점으로 둔다. 나중에 웹에서 �
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from dotenv import load_dotenv
-from sqlalchemy import select
 
 from news_weaver.collectors.result import CollectionResult
 from news_weaver.collectors.rss_collector import collect_all_feeds
@@ -21,7 +20,6 @@ from news_weaver.config import get_settings
 from news_weaver.db.article_repository import ArticleRepository
 from news_weaver.db.engine import get_session_factory
 from news_weaver.db.summary_repository import SummaryRepository
-from news_weaver.db.tables import ArticleRow
 from news_weaver.deliver.render import build_subject, render_digest
 from news_weaver.deliver.smtp import SmtpMailSender
 from news_weaver.domain.article import Article
@@ -38,8 +36,9 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# 오래된 기사가 매일 다시 후보에 오르지 않도록 선별 대상을 최근 수집분으로 제한한다
-RECENT_ARTICLE_LIMIT = 500
+# 배치가 하루 실패해도 그날 기사를 놓치지 않도록 이틀치를 후보로 삼는다.
+# 건수로 제한하면 수집량이 늘 때마다 범위가 좁아져 중복 판정이 성립하지 않는다
+CANDIDATE_WINDOW_DAYS = 2
 
 # 한 번에 임베딩할 상한. 수집 규모가 커져도 배치 시간이 예측 가능하게 한다
 EMBEDDING_BATCH_LIMIT = 300
@@ -120,39 +119,13 @@ def embed_pending_articles() -> int:
     return updated_count
 
 
-def load_recent_articles(limit: int) -> list[Article]:
-    """
-    최근 수집된 기사를 읽어온다.
-
-    선별 대상을 최근 분량으로 제한해, 오래된 기사가 매일 다시 후보에
-    오르지 않게 한다.
-    """
+def load_recent_articles(window_days: int) -> list[Article]:
+    """최근 수집된 기사를 선별 후보로 읽어온다."""
+    since = datetime.now(UTC) - timedelta(days=window_days)
     session_factory = get_session_factory()
 
     with session_factory() as session:
-        rows = (
-            session.execute(
-                select(ArticleRow)
-                .order_by(ArticleRow.collected_at.desc())
-                .limit(limit)
-            )
-            .scalars()
-            .all()
-        )
-
-    return [
-        Article(
-            source_name=row.source_name,
-            title=row.title,
-            url=row.url,
-            url_hash=row.url_hash,
-            collected_at=row.collected_at,
-            published_at=row.published_at,
-            author=row.author,
-            summary=row.summary,
-        )
-        for row in rows
-    ]
+        return ArticleRepository(session).find_recent_articles(since)
 
 
 def select_and_deduplicate(articles: list[Article]) -> list[ScoredArticle]:
@@ -240,7 +213,7 @@ def run_ingest() -> None:
     embedded_count = embed_pending_articles()
     logger.info("임베딩 생성 %d건", embedded_count)
 
-    candidates = load_recent_articles(RECENT_ARTICLE_LIMIT)
+    candidates = load_recent_articles(CANDIDATE_WINDOW_DAYS)
     selected = select_and_deduplicate(candidates)
     logger.info("선별 %d건 (후보 %d건)", len(selected), len(candidates))
 

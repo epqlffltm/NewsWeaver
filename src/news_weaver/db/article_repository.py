@@ -143,6 +143,24 @@ class ArticleRepository:
         ).all()
 
         return [(row.left_hash, row.right_hash, row.similarity) for row in rows]
+    
+    def find_recent_articles(self, since: datetime) -> list[Article]:
+        """
+        지정한 시각 이후에 수집된 기사를 읽어온다.
+
+        건수로 제한하면 수집량이 늘 때마다 범위가 좁아져, 같은 날 기사가
+        후보에서 밀려나고 중복 판정이 성립하지 않는다. 시간으로 자르면
+        소스 수와 무관하게 의도한 범위가 유지된다.
+        """
+        statement = (
+            select(ArticleRow)
+            .where(ArticleRow.collected_at >= since)
+            .order_by(ArticleRow.collected_at.desc())
+        )
+
+        rows = self._session.execute(statement).scalars().all()
+
+        return [_to_article(row) for row in rows]
 
 
 def _to_row_values(article: Article) -> dict:
