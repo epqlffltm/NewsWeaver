@@ -25,9 +25,11 @@ from news_weaver.db.tables import ArticleRow
 from news_weaver.deliver.render import build_subject, render_digest
 from news_weaver.deliver.smtp import SmtpMailSender
 from news_weaver.domain.article import Article
+from news_weaver.embedding.ollama import OllamaEmbedder
 from news_weaver.logging_config import configure_logging
+from news_weaver.selection.dedupe import remove_near_duplicates
 from news_weaver.selection.interests import INTEREST_TOPICS, MAX_ARTICLES_PER_RUN
-from news_weaver.selection.keyword import select_articles
+from news_weaver.selection.keyword import ScoredArticle, select_articles
 from news_weaver.summarize.ollama import OllamaSummarizer
 from news_weaver.summarize.prompt import PROMPT_VERSION
 from news_weaver.summarize.service import SummarizeReport, summarize_with_cache
@@ -38,6 +40,12 @@ logger = logging.getLogger(__name__)
 
 # 오래된 기사가 매일 다시 후보에 오르지 않도록 선별 대상을 최근 수집분으로 제한한다
 RECENT_ARTICLE_LIMIT = 200
+
+# 한 번에 임베딩할 상한. 수집 규모가 커져도 배치 시간이 예측 가능하게 한다
+EMBEDDING_BATCH_LIMIT = 300
+
+# 중복 제거로 빠질 것을 감안해 상한보다 넉넉히 뽑는다
+SELECTION_OVERSAMPLE = 2
 
 
 def log_source_report(result: CollectionResult) -> None:
@@ -82,6 +90,36 @@ def store_articles(articles: list[Article]) -> int:
     return inserted_count
 
 
+def embed_pending_articles() -> int:
+    """
+    아직 벡터가 없는 기사에 임베딩을 생성한다.
+
+    중복 제거와 유사도 검색이 벡터를 전제하므로 선별보다 먼저 실행한다.
+    """
+    settings = get_settings()
+    session_factory = get_session_factory()
+
+    with session_factory() as session:
+        repository = ArticleRepository(session)
+        targets = repository.find_articles_without_embedding(
+            settings.embedding_model,
+            EMBEDDING_BATCH_LIMIT,
+        )
+
+        if not targets:
+            return 0
+
+        results = OllamaEmbedder().embed(targets)
+        updated_count = repository.save_embeddings(results)
+        session.commit()
+
+    failed_count = len([r for r in results if not r.is_success])
+    if failed_count:
+        logger.warning("임베딩 실패 %d건", failed_count)
+
+    return updated_count
+
+
 def load_recent_articles(limit: int) -> list[Article]:
     """
     최근 수집된 기사를 읽어온다.
@@ -115,6 +153,42 @@ def load_recent_articles(limit: int) -> list[Article]:
         )
         for row in rows
     ]
+
+
+def select_and_deduplicate(articles: list[Article]) -> list[ScoredArticle]:
+    """
+    관심 주제로 선별한 뒤 같은 사건을 다룬 기사를 하나로 줄인다.
+
+    중복으로 빠지는 만큼 상한에 미달할 수 있으므로 넉넉히 뽑아두고,
+    제거 후에 상한을 적용한다.
+    """
+    settings = get_settings()
+
+    selected = select_articles(
+        articles,
+        INTEREST_TOPICS,
+        MAX_ARTICLES_PER_RUN * SELECTION_OVERSAMPLE,
+    )
+
+    if not selected:
+        return []
+
+    session_factory = get_session_factory()
+
+    with session_factory() as session:
+        repository = ArticleRepository(session)
+        pairs = repository.find_similarity_pairs(
+            [item.article.url_hash for item in selected],
+            settings.embedding_model,
+            settings.duplicate_similarity_threshold,
+        )
+
+    report = remove_near_duplicates(selected, pairs)
+
+    for removed_title, representative in report.removed:
+        logger.info("중복 제외: %s ← %s", removed_title[:35], representative[:35])
+
+    return report.kept[:MAX_ARTICLES_PER_RUN]
 
 
 def summarize_selected(articles: list[Article]) -> SummarizeReport:
@@ -163,8 +237,11 @@ def run_ingest() -> None:
     inserted_count = store_articles(collected)
     logger.info("수집 %d건 / 신규 저장 %d건", len(collected), inserted_count)
 
+    embedded_count = embed_pending_articles()
+    logger.info("임베딩 생성 %d건", embedded_count)
+
     candidates = load_recent_articles(RECENT_ARTICLE_LIMIT)
-    selected = select_articles(candidates, INTEREST_TOPICS, MAX_ARTICLES_PER_RUN)
+    selected = select_and_deduplicate(candidates)
     logger.info("선별 %d건 (후보 %d건)", len(selected), len(candidates))
 
     if not selected:
@@ -173,8 +250,9 @@ def run_ingest() -> None:
 
     report = summarize_selected([item.article for item in selected])
     logger.info(
-        "요약 완료 / 캐시 %d건 / 생성 %d건 / 실패 %d건",
+        "요약 완료 / 캐시 %d건 / 요청 %d건 / 생성 %d건 / 실패 %d건",
         report.cache_hit_count,
+        report.requested_count,
         report.generated_count,
         len(report.failures),
     )
