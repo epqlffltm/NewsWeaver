@@ -40,4 +40,26 @@ def get_settings() -> Settings:
         database_url=_require_env("DATABASE_URL"),
         ollama_base_url=_require_env("OLLAMA_BASE_URL"),
         ollama_model=_require_env("OLLAMA_MODEL"),
+        smtp_host=_require_env("SMTP_HOST"),
+        smtp_port=int(_require_env("SMTP_PORT")),
+        smtp_username=_require_env("SMTP_USERNAME"),
+        smtp_password=_require_env("SMTP_PASSWORD"),
+        mail_recipient=_require_env("MAIL_RECIPIENT"),
     )
+    
+@dataclass(frozen=True, slots=True)
+class Settings:
+    """애플리케이션 실행에 필요한 설정값."""
+
+    database_url: str
+
+    # 요약 모델과 서버 주소는 실행 환경의 성능에 따라 달라지므로 분리한다
+    ollama_base_url: str
+    ollama_model: str
+
+    # 발송 계정 정보. 비밀번호가 포함되므로 저장소에 두지 않는다
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    mail_recipient: str
