@@ -1,13 +1,17 @@
 # NewsWeaver/tests/test_dedupe.py
 
 """
-유사 기사 그룹화가 같은 사건을 하나로 묶고 대표를 올바르게 고르는지 검증한다.
+유사 기사 그룹화가 같은 사건을 하나로 묶고 순위를 올바르게 매기는지 검증한다.
 """
 
 from datetime import UTC, datetime
 
 from news_weaver.domain.article import Article
-from news_weaver.selection.dedupe import group_similar_articles, take_representatives
+from news_weaver.selection.dedupe import (
+    EXTRA_SOURCE_SCORE,
+    group_similar_articles,
+    take_representatives,
+)
 from news_weaver.selection.keyword import ScoredArticle
 
 COLLECTED_AT = datetime(2026, 9, 2, 6, 0, tzinfo=UTC)
@@ -98,7 +102,11 @@ def test_unrelated_articles_stay_separate() -> None:
 
 
 def test_group_order_follows_input() -> None:
-    """그룹 순서는 대표 기사의 입력 순서를 따른다."""
+    """
+    그룹화 자체는 입력 순서를 유지한다.
+
+    보도량을 반영한 재정렬은 호출자의 몫이므로 여기서 관여하지 않는다.
+    """
     scored = [
         make_scored("a", "첫째", 9),
         make_scored("b", "둘째", 6),
@@ -108,6 +116,45 @@ def test_group_order_follows_input() -> None:
     groups = group_similar_articles(scored, [("a", "c", 0.7)])
 
     assert [g.representative.article.url_hash for g in groups] == ["a", "b"]
+
+
+def test_group_score_adds_bonus_per_extra_source() -> None:
+    """
+    출처가 늘면 그룹 점수가 올라간다.
+
+    여러 매체가 같은 사건을 다뤘다는 사실은 관심 주제 일치와 다른 종류의
+    신호이므로 순위에 반영한다.
+    """
+    scored = [make_scored("a", "대표", 9), make_scored("b", "중복", 6)]
+
+    groups = group_similar_articles(scored, [("a", "b", 0.7)])
+
+    assert groups[0].score == 9 + EXTRA_SOURCE_SCORE
+
+
+def test_single_group_score_equals_representative() -> None:
+    """구성원이 하나면 대표 점수가 그대로 그룹 점수가 된다."""
+    groups = group_similar_articles([make_scored("a", "혼자", 9)], [])
+
+    assert groups[0].score == 9
+
+
+def test_grouped_event_can_outrank_higher_scored_single() -> None:
+    """
+    보도량이 많은 사건은 점수가 더 높은 단일 기사를 앞지를 수 있다.
+
+    한 매체만 다룬 기사보다 여러 매체가 다룬 사건이 밀려나는 상황을 막는다.
+    """
+    scored = [
+        make_scored("a", "단독 기사", 10),
+        make_scored("b", "묶인 기사", 9),
+        make_scored("c", "묶인 기사2", 5),
+    ]
+
+    groups = group_similar_articles(scored, [("b", "c", 0.7)])
+    by_score = sorted(groups, key=lambda group: group.score, reverse=True)
+
+    assert by_score[0].representative.article.url_hash == "b"
 
 
 def test_group_key_ignores_member_order() -> None:

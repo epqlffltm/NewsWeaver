@@ -135,8 +135,9 @@ def log_group_composition(group: ArticleGroup) -> None:
 
     others = ", ".join(item.article.source_name for item in group.others)
     logger.info(
-        "사건 묶음 (%d건): %s ← %s",
+        "사건 묶음 (%d건, %d점): %s ← %s",
         group.size,
+        group.score,
         group.representative.article.title[:35],
         others,
     )
@@ -174,6 +175,10 @@ def select_and_group(articles: list[Article]) -> list[ArticleGroup]:
 
     for group in groups:
         log_group_composition(group)
+
+    # 보도량을 반영한 점수로 다시 정렬한다. 그룹화 전 순위는 기사 단위
+    # 관심도만 반영하므로, 여러 매체가 다룬 사건이 밀려날 수 있다
+    groups.sort(key=lambda group: group.score, reverse=True)
 
     return groups[:MAX_ARTICLES_PER_RUN]
 

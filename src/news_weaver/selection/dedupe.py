@@ -20,6 +20,11 @@ from dataclasses import dataclass
 
 from news_weaver.selection.keyword import ScoredArticle
 
+# 출처가 하나 늘 때마다 더할 점수. 여러 매체가 다룬 사건은 그 자체로
+# 뉴스 가치가 있다는 신호이므로 순위에 반영한다.
+# 값이 크면 관심 밖 사건이 보도량만으로 상위에 오르므로 실측으로 조정한다
+EXTRA_SOURCE_SCORE = 2
+
 
 @dataclass(frozen=True, slots=True)
 class ArticleGroup:
@@ -40,6 +45,17 @@ class ArticleGroup:
     def size(self) -> int:
         """그룹에 속한 기사 수."""
         return 1 + len(self.others)
+
+    @property
+    def score(self) -> int:
+        """
+        그룹의 순위 점수.
+
+        대표 기사의 관심도에 보도량을 더한다. 같은 사건을 여러 매체가
+        다뤘다는 사실은 관심 주제 일치와는 다른 종류의 신호이므로,
+        기사 단위 점수에 섞지 않고 그룹 단계에서 더한다.
+        """
+        return self.representative.score + len(self.others) * EXTRA_SOURCE_SCORE
 
     @property
     def group_key(self) -> str:
@@ -79,6 +95,9 @@ def group_similar_articles(
 
     짝이 없는 기사도 구성원이 하나인 그룹이 된다. 호출자가 단일 기사와
     묶인 기사를 나눠 처리하지 않아도 되게 하기 위함이다.
+
+    반환 순서는 입력 순서를 따른다. 보도량을 반영한 재정렬은 호출자의
+    몫이며, 그룹화 자체는 순서에 관여하지 않는다.
     """
     similar_to = _build_similarity_map(similarity_pairs)
 
