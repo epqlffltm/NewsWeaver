@@ -56,6 +56,10 @@ class OllamaSummarizer:
         except requests.RequestException as error:
             logger.warning("요약 요청 실패: %s — %s", article.title[:40], error)
             return self._failure(article, f"요청 실패: {error}")
+        except (KeyError, TypeError, ValueError) as error:
+            # 서버가 예상과 다른 형식을 돌려줘도 한 건의 실패로 그쳐야 한다
+            logger.warning("요약 응답 형식 오류: %s — %s", article.title[:40], error)
+            return self._failure(article, f"응답 형식 오류: {error}")
 
         if not summary_text:
             logger.warning("요약 응답이 비어 있음: %s", article.title[:40])

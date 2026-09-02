@@ -55,11 +55,11 @@ class OllamaEmbedder:
             vector = self._request_embedding(build_embedding_text(article))
         except requests.RequestException as error:
             logger.warning("임베딩 요청 실패: %s — %s", article.title[:40], error)
-            return EmbeddingResult(
-                url_hash=article.url_hash,
-                error=f"요청 실패: {error}",
-                model_name=self._model_name,
-            )
+            return self._failure(article, f"요청 실패: {error}")
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            # 서버가 예상과 다른 형식을 돌려줘도 한 건의 실패로 그쳐야 한다
+            logger.warning("임베딩 응답 형식 오류: %s — %s", article.title[:40], error)
+            return self._failure(article, f"응답 형식 오류: {error}")
 
         return EmbeddingResult(
             url_hash=article.url_hash,
@@ -68,7 +68,12 @@ class OllamaEmbedder:
         )
 
     def _request_embedding(self, text: str) -> list[float]:
-        """Ollama에 임베딩을 요청하고 벡터를 반환한다."""
+        """
+        Ollama에 임베딩을 요청하고 벡터를 반환한다.
+
+        응답 형식이 예상과 다르면 벡터 컬럼에 잘못된 값이 들어가므로,
+        저장 전에 여기서 걸러낸다.
+        """
         response = requests.post(
             f"{self._base_url}/api/embed",
             json={"model": self._model_name, "input": text},
@@ -76,4 +81,20 @@ class OllamaEmbedder:
         )
         response.raise_for_status()
 
-        return response.json()["embeddings"][0]
+        embeddings = response.json()["embeddings"]
+        if not embeddings:
+            raise ValueError("응답에 벡터가 없음")
+
+        vector = embeddings[0]
+        if not isinstance(vector, list) or not vector:
+            raise TypeError(f"벡터 형식이 예상과 다름: {type(vector).__name__}")
+
+        return vector
+
+    def _failure(self, article: Article, reason: str) -> EmbeddingResult:
+        """실패 결과를 만든다."""
+        return EmbeddingResult(
+            url_hash=article.url_hash,
+            error=reason,
+            model_name=self._model_name,
+        )

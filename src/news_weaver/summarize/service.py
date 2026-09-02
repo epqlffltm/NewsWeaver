@@ -6,6 +6,9 @@
 요약은 건당 수십 초에서 수 분이 걸리므로, 이미 만들어둔 결과가 있으면
 모델을 부르지 않는 것이 이 계층의 핵심 책임이다. 배치 재실행이나 실패 후
 재시도에서 같은 작업을 반복하지 않게 한다.
+
+캐시 적중 여부는 요약 순서에 영향을 주면 안 된다. 입력으로 받은 선별 순위가
+관련도를 나타내므로, 결과도 그 순서를 그대로 유지한다.
 """
 
 from dataclasses import dataclass
@@ -27,12 +30,16 @@ class SummarizedArticle:
 class SummarizeReport:
     """한 번의 요약 실행 결과와 그 과정을 담는다."""
 
+    # 입력으로 받은 선별 순서를 그대로 유지한다
     summarized: list[SummarizedArticle]
 
     # 캐시로 처리한 건수. 요약 비용을 얼마나 아꼈는지 보여준다
     cache_hit_count: int
 
-    # 모델을 실제로 호출한 건수
+    # 모델에 실제로 넘긴 건수. 실패분을 포함하므로 비용 추정의 근거가 된다
+    requested_count: int
+
+    # 그중 요약문을 얻은 건수
     generated_count: int
 
     # 요약에 실패한 기사의 제목과 이유. 실패해도 나머지는 전달된다
@@ -42,42 +49,56 @@ class SummarizeReport:
 def _split_by_cache(
     articles: list[Article],
     cached: dict[str, str],
-) -> tuple[list[SummarizedArticle], list[Article]]:
-    """기사를 캐시로 해결되는 것과 새로 요약해야 하는 것으로 나눈다."""
-    from_cache: list[SummarizedArticle] = []
-    to_generate: list[Article] = []
+) -> list[Article]:
+    """캐시에 없어 새로 요약해야 하는 기사만 골라낸다."""
+    return [article for article in articles if article.url_hash not in cached]
+
+
+def _index_results(results: list[SummaryResult]) -> dict[str, SummaryResult]:
+    """결과를 url_hash로 찾을 수 있게 사전으로 만든다."""
+    return {result.url_hash: result for result in results}
+
+
+def _collect_failures(
+    articles: list[Article],
+    results_by_hash: dict[str, SummaryResult],
+) -> list[tuple[str, str]]:
+    """요약에 실패한 기사의 제목과 이유를 모은다."""
+    failures: list[tuple[str, str]] = []
+
+    for article in articles:
+        result = results_by_hash.get(article.url_hash)
+        if result is not None and not result.is_success:
+            failures.append((article.title, result.error or "알 수 없는 오류"))
+
+    return failures
+
+
+def _build_summarized(
+    articles: list[Article],
+    cached: dict[str, str],
+    results_by_hash: dict[str, SummaryResult],
+) -> list[SummarizedArticle]:
+    """
+    입력 순서를 유지한 채 요약문을 붙인다.
+
+    캐시에서 온 것과 새로 만든 것을 나눠 이어붙이면 선별 순위가 뒤섞이므로,
+    원본 목록을 한 번 순회하며 조립한다.
+    """
+    summarized: list[SummarizedArticle] = []
 
     for article in articles:
         summary_text = cached.get(article.url_hash)
+
         if summary_text is None:
-            to_generate.append(article)
-        else:
-            from_cache.append(SummarizedArticle(article, summary_text))
+            result = results_by_hash.get(article.url_hash)
+            if result is None or not result.is_success:
+                continue
+            summary_text = result.summary_text
 
-    return from_cache, to_generate
+        summarized.append(SummarizedArticle(article, summary_text))
 
-
-def _collect_generated(
-    articles: list[Article],
-    results: list[SummaryResult],
-) -> tuple[list[SummarizedArticle], list[tuple[str, str]]]:
-    """요약 결과를 성공과 실패로 나눈다."""
-    article_by_hash = {article.url_hash: article for article in articles}
-
-    succeeded: list[SummarizedArticle] = []
-    failures: list[tuple[str, str]] = []
-
-    for result in results:
-        article = article_by_hash.get(result.url_hash)
-        if article is None:
-            continue
-
-        if result.is_success:
-            succeeded.append(SummarizedArticle(article, result.summary_text))
-        else:
-            failures.append((article.title, result.error or "알 수 없는 오류"))
-
-    return succeeded, failures
+    return summarized
 
 
 def summarize_with_cache(
@@ -96,24 +117,21 @@ def summarize_with_cache(
     url_hashes = [article.url_hash for article in articles]
     cached = repository.find_cached(url_hashes, model_name, prompt_version)
 
-    from_cache, to_generate = _split_by_cache(articles, cached)
+    to_generate = _split_by_cache(articles, cached)
 
-    if not to_generate:
-        return SummarizeReport(
-            summarized=from_cache,
-            cache_hit_count=len(from_cache),
-            generated_count=0,
-            failures=[],
-        )
+    results_by_hash: dict[str, SummaryResult] = {}
+    if to_generate:
+        results = summarizer.summarize(to_generate)
+        repository.save_summaries(results)
+        results_by_hash = _index_results(results)
 
-    results = summarizer.summarize(to_generate)
-    repository.save_summaries(results)
-
-    generated, failures = _collect_generated(to_generate, results)
+    summarized = _build_summarized(articles, cached, results_by_hash)
+    failures = _collect_failures(to_generate, results_by_hash)
 
     return SummarizeReport(
-        summarized=from_cache + generated,
-        cache_hit_count=len(from_cache),
-        generated_count=len(generated),
+        summarized=summarized,
+        cache_hit_count=len(cached),
+        requested_count=len(to_generate),
+        generated_count=len(summarized) - len(cached),
         failures=failures,
     )

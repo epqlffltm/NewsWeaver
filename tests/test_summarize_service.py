@@ -188,3 +188,18 @@ def test_empty_input_returns_empty_report() -> None:
 
     assert summarizer.called_with_count == 0
     assert report.summarized == []
+    
+def test_result_keeps_input_order() -> None:
+    """
+    캐시 적중 여부가 결과 순서를 바꾸지 않는다.
+
+    입력 순서는 선별 순위이므로, 캐시 때문에 순위가 뒤섞이면
+    관련도 높은 기사가 메일 아래로 밀려난다.
+    """
+    repository = InMemorySummaryRepository()
+    run([make_article("b")], FakeSummarizer(), repository)
+
+    articles = [make_article("a"), make_article("b"), make_article("c")]
+    report = run(articles, FakeSummarizer(), repository)
+
+    assert [item.article.url_hash for item in report.summarized] == ["a", "b", "c"]
