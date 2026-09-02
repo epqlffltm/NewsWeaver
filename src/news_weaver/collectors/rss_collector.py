@@ -19,6 +19,8 @@ from news_weaver.domain.article import Article
 from news_weaver.pipeline.clean_text import clean_summary
 from news_weaver.pipeline.normalize import hash_url, normalize_url
 
+logger = logging.getLogger(__name__)
+
 # RFC 822 계열 날짜 문자열의 끝에 오는 타임존 표기를 찾는다.
 # 예: "+0900", "-0500", "GMT", "Z"
 TIMEZONE_MARKER_PATTERN = re.compile(r"(?:[+-]\d{2}:?\d{2}|Z|[A-Z]{2,4})\s*$")
@@ -26,7 +28,11 @@ TIMEZONE_MARKER_PATTERN = re.compile(r"(?:[+-]\d{2}:?\d{2}|Z|[A-Z]{2,4})\s*$")
 # 타임존 표기가 없는 피드는 한국 언론사 기준으로 KST로 간주한다
 KST = timezone(timedelta(hours=9))
 
-logger = logging.getLogger(__name__)
+# 소스에 따라 발행 시각을 published 또는 updated로 제공한다
+PUBLISHED_FIELD_PAIRS = (
+    ("published", "published_parsed"),
+    ("updated", "updated_parsed"),
+)
 
 
 def _has_timezone_marker(published_raw: str) -> bool:
@@ -49,7 +55,9 @@ def to_utc_datetime(published_raw: str | None, published_parsed) -> datetime | N
     if published_parsed is None:
         return None
 
-    naive = datetime(*published_parsed[:6])# noqa: DTZ001
+    # 이 시점에는 UTC인지 KST인지 아직 판정되지 않았으므로 의도적으로
+    # 타임존 없는 값을 만든다. 아래 분기에서 반드시 타임존이 부여된다.
+    naive = datetime(*published_parsed[:6])  # noqa: DTZ001
 
     if _has_timezone_marker(published_raw or ""):
         # feedparser가 이미 UTC로 변환했다
@@ -58,15 +66,29 @@ def to_utc_datetime(published_raw: str | None, published_parsed) -> datetime | N
     # 원본 시각이 그대로 남아 있으므로 KST로 간주해 변환한다
     return naive.replace(tzinfo=KST).astimezone(UTC)
 
+
+def _extract_published_at(entry) -> datetime | None:
+    """
+    발행 시각을 꺼낸다.
+
+    published 대신 updated만 제공하는 소스가 있어(예: 경향신문) 순서대로
+    확인한다. 둘 다 없으면 수집 시각을 기준으로 삼도록 None을 반환한다.
+    """
+    for raw_field, parsed_field in PUBLISHED_FIELD_PAIRS:
+        parsed = entry.get(parsed_field)
+        if parsed is not None:
+            return to_utc_datetime(entry.get(raw_field), parsed)
+
+    return None
+
+
 def _extract_author(entry) -> str | None:
-    """
-    작성자를 꺼낸다. 제공하지 않는 소스가 있어 없으면 None을 반환한다.
-    """
-    
+    """작성자를 꺼낸다. 제공하지 않는 소스가 있어 없으면 None을 반환한다."""
     author = entry.get("author")
     if not author:
         return None
     return author.strip()
+
 
 def to_article(entry, source_name: str, collected_at: datetime) -> Article | None:
     """
@@ -89,14 +111,12 @@ def to_article(entry, source_name: str, collected_at: datetime) -> Article | Non
         url=link,
         url_hash=hash_url(normalized_url),
         collected_at=collected_at,
-        published_at=to_utc_datetime(
-            entry.get("published"),
-            entry.get("published_parsed"),
-        ),
+        published_at=_extract_published_at(entry),
         author=_extract_author(entry),
         summary=clean_summary(entry.get("summary")),
     )
-    
+
+
 def collect_feed(
     source_name: str,
     feed_url: str,
@@ -137,7 +157,8 @@ def collect_feed(
         articles=articles,
         skipped_count=skipped_count,
     )
-    
+
+
 def collect_all_feeds(
     sources: tuple[RssSource, ...],
     collected_at: datetime,

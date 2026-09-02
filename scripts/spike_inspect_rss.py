@@ -11,13 +11,11 @@ RSS 피드의 실제 구조를 확인하기 위한 일회성 스파이크 스크
 import feedparser
 
 FEED_URLS = {
-    "ZDNet_코리아": "https://feeds.feedburner.com/zdkorea",
-    "한겨레_경제": "https://www.hani.co.kr/rss/economy/",
-    "전자신문": "https://rss.etnews.com/Section901.xml",
-    "블로터": "https://www.bloter.net/rss/allArticle.xml",
-    "동아사이언스": "https://www.dongascience.com/rss/rss_all.xml",
+    "디지털데일리": "https://www.ddaily.co.kr/rss/allArticle.xml",
+    "IT조선": "https://it.chosun.com/rss/allArticle.xml",
+    "아이뉴스24_IT": "https://www.inews24.com/rss/it_all.xml",
+    "테크M": "https://www.techm.kr/rss/allArticle.xml",
 }
-
 INSPECTED_FIELDS = ("title", "link", "published", "updated", "author", "summary")
 
 

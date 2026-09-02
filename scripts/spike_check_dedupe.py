@@ -51,7 +51,7 @@ def main() -> None:
 
     with session_factory() as session:
         articles = load_all_articles(session)
-        selected = select_articles(articles, INTEREST_TOPICS, MAX_ARTICLES_PER_RUN)
+        selected = select_articles(articles, INTEREST_TOPICS, MAX_ARTICLES_PER_RUN * 2)
 
         if not selected:
             print("선별된 기사가 없습니다.")

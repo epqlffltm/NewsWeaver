@@ -6,6 +6,10 @@
 소스가 늘어나면 이 파일만 수정하면 되도록, 수집 로직과 대상 목록을 분리한다.
 운영 중 소스를 추가·중단할 필요가 생기면 DB로 옮기게 되지만, 지금은
 코드 상수로 두는 편이 단순하다.
+
+피드는 예고 없이 죽거나 형식이 바뀌므로, 추가 전에 scripts/spike_inspect_rss.py로
+실제 응답을 확인한다. 종합지는 관심 밖 기사만 대량으로 늘려 임베딩 비용을
+낭비하므로, 관심 영역과 정렬된 매체만 등록한다.
 """
 
 from dataclasses import dataclass
@@ -17,10 +21,13 @@ class RssSource:
 
     name: str
     url: str
-    
+
+
 RSS_SOURCES: tuple[RssSource, ...] = (
     RssSource("ZDNet", "https://feeds.feedburner.com/zdkorea"),
     RssSource("전자신문", "https://rss.etnews.com/Section901.xml"),
     RssSource("블로터", "https://www.bloter.net/rss/allArticle.xml"),
     RssSource("한겨레_경제", "https://www.hani.co.kr/rss/economy/"),
+    RssSource("IT조선", "https://it.chosun.com/rss/allArticle.xml"),
+    RssSource("테크M", "https://www.techm.kr/rss/allArticle.xml"),
 )

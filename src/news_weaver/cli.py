@@ -39,7 +39,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # 오래된 기사가 매일 다시 후보에 오르지 않도록 선별 대상을 최근 수집분으로 제한한다
-RECENT_ARTICLE_LIMIT = 200
+RECENT_ARTICLE_LIMIT = 500
 
 # 한 번에 임베딩할 상한. 수집 규모가 커져도 배치 시간이 예측 가능하게 한다
 EMBEDDING_BATCH_LIMIT = 300

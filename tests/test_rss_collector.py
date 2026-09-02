@@ -1,7 +1,7 @@
 # NewsWeaver/tests/test_rss_collector.py
 
 """
-RSS 피드의 시각 변환이 소스별 타임존 표기 차이를 올바르게 흡수하는지 검증한다.
+RSS 수집기가 소스별 형식 차이와 피드 장애를 올바르게 처리하는지 검증한다.
 """
 
 import time
@@ -14,6 +14,8 @@ from news_weaver.collectors.rss_collector import (
     to_utc_datetime,
 )
 from news_weaver.collectors.sources import RssSource
+
+COLLECTED_AT = datetime(2026, 9, 1, 6, 0, tzinfo=UTC)
 
 
 def test_offset_marked_time_is_kept_as_utc() -> None:
@@ -45,8 +47,6 @@ def test_missing_time_returns_none() -> None:
     발행 시각을 제공하지 않는 소스는 None을 반환한다.
     """
     assert to_utc_datetime(None, None) is None
-    
-COLLECTED_AT = datetime(2026, 9, 1, 6, 0, tzinfo=UTC)
 
 
 def test_to_article_maps_full_entry() -> None:
@@ -68,6 +68,26 @@ def test_to_article_maps_full_entry() -> None:
     assert article.source_name == "ZDNet"
     assert article.author == "안희정 기자"
     assert article.published_at == datetime(2026, 9, 1, 4, 13, 47, tzinfo=UTC)
+
+
+def test_updated_is_used_when_published_missing() -> None:
+    """
+    published가 없고 updated만 있는 소스도 발행 시각을 얻는다.
+
+    경향신문처럼 updated만 제공하는 피드가 있어, 이를 놓치면 발행 시각이
+    없는 기사로 취급된다.
+    """
+    entry = {
+        "title": "제목",
+        "link": "https://example.com/1",
+        "updated": "2026-09-02T15:35:00+09:00",
+        "updated_parsed": time.struct_time((2026, 9, 2, 6, 35, 0, 2, 245, 0)),
+    }
+
+    article = to_article(entry, "경향신문", COLLECTED_AT)
+
+    assert article is not None
+    assert article.published_at == datetime(2026, 9, 2, 6, 35, tzinfo=UTC)
 
 
 def test_to_article_keeps_original_url() -> None:
@@ -120,25 +140,28 @@ def test_to_article_rejects_entry_without_link() -> None:
     entry = {"title": "제목만 있는 항목"}
 
     assert to_article(entry, "테스트", COLLECTED_AT) is None
-    
-    
+
+
 def test_collect_feed_marks_empty_feed_as_unhealthy(monkeypatch) -> None:
     """항목이 하나도 없으면 장애로 표시한다. 조용한 실패를 감지하기 위함이다."""
-    
+
     def fake_parse(url):
         return {"entries": [], "bozo_exception": "syntax error"}
-    
-    monkeypatch.setattr("news_weaver.collectors.rss_collector.feedparser.parse", fake_parse)
-    
+
+    monkeypatch.setattr(
+        "news_weaver.collectors.rss_collector.feedparser.parse", fake_parse
+    )
+
     result = collect_feed("연합뉴스", "https://example.com/rss", COLLECTED_AT)
-    
+
     assert result.is_healthy is False
     assert result.article_count == 0
     assert "syntax error" in result.error
-    
+
+
 def test_collect_feed_counts_skipped_entries(monkeypatch) -> None:
     """변환할 수 없는 항목은 버리되 몇 건인지 기록한다."""
-    
+
     def fake_parse(url):
         return {
             "entries": [
@@ -147,25 +170,31 @@ def test_collect_feed_counts_skipped_entries(monkeypatch) -> None:
                 {"link": "https://example.com/3"},
             ]
         }
-        
-    monkeypatch.setattr("news_weaver.collectors.rss_collector.feedparser.parse", fake_parse)
-    
+
+    monkeypatch.setattr(
+        "news_weaver.collectors.rss_collector.feedparser.parse", fake_parse
+    )
+
     result = collect_feed("테스트", "https://example.com/rss", COLLECTED_AT)
-    
+
     assert result.is_healthy is True
     assert result.article_count == 1
     assert result.skipped_count == 2
-    
+
+
 def test_collect_all_feeds_keeps_failures(monkeypatch) -> None:
     """
     한 소스가 실패해도 나머지 소스의 수집 결과는 유지된다.
     """
+
     def fake_parse(url):
         if "broken" in url:
             return {"entries": [], "bozo_exception": "syntax error"}
         return {"entries": [{"title": "기사", "link": "https://example.com/1"}]}
 
-    monkeypatch.setattr("news_weaver.collectors.rss_collector.feedparser.parse", fake_parse)
+    monkeypatch.setattr(
+        "news_weaver.collectors.rss_collector.feedparser.parse", fake_parse
+    )
 
     sources = (
         RssSource("정상소스", "https://example.com/ok"),
