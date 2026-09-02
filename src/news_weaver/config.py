@@ -18,6 +18,10 @@ class Settings:
 
     database_url: str
 
+    # 요약 모델과 서버 주소는 실행 환경의 성능에 따라 달라지므로 분리한다
+    ollama_base_url: str
+    ollama_model: str
+
 
 def _require_env(key: str) -> str:
     """필수 환경변수를 읽는다. 없으면 즉시 실패시킨다."""
@@ -27,7 +31,6 @@ def _require_env(key: str) -> str:
             f"환경변수 {key}가 설정되지 않았습니다. .env 파일을 확인하세요."
         )
     return value
-
 
 
 @lru_cache(maxsize=1)

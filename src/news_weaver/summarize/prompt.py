@@ -14,13 +14,14 @@
 from news_weaver.domain.article import Article
 
 # 프롬프트를 수정할 때마다 올린다. 요약 캐시의 키 일부로 쓰인다
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 _TEMPLATE = """다음 뉴스를 한국어로 3문장 이내로 요약해줘.
 
 규칙:
 - 원문에 없는 내용, 평가, 전망을 추가하지 마
 - 구체적인 수치와 고유명사는 그대로 유지해
+- 신문 기사체(~했다, ~이다)로 작성해
 - 요약문만 출력하고 다른 말은 붙이지 마
 
 제목: {title}
