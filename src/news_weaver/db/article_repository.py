@@ -9,12 +9,15 @@ SQL과 테이블 구조에 대한 지식을 이 모듈 안에 가둬, 파이프�
 """
 
 from dataclasses import asdict
+from datetime import UTC, datetime
 
+from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from news_weaver.db.tables import ArticleRow
 from news_weaver.domain.article import Article
+from news_weaver.embedding.base import EmbeddingResult
 
 
 class ArticleRepository:
@@ -38,7 +41,62 @@ class ArticleRepository:
         )
 
         inserted_ids = self._session.execute(statement).scalars().all()
+
         return len(inserted_ids)
+
+    def find_articles_without_embedding(
+        self,
+        model_name: str,
+        limit: int,
+    ) -> list[Article]:
+        """
+        임베딩이 없거나 다른 모델로 만들어진 기사를 찾는다.
+
+        모델을 바꾸면 기존 벡터는 다른 공간에 있어 비교할 수 없으므로
+        재생성 대상이 된다. 조건에 모델명을 포함해 별도의 무효화 처리 없이
+        점진적으로 교체되게 한다.
+        """
+        statement = (
+            select(ArticleRow)
+            .where(
+                or_(
+                    ArticleRow.embedding.is_(None),
+                    ArticleRow.embedding_model != model_name,
+                )
+            )
+            .order_by(ArticleRow.collected_at.desc())
+            .limit(limit)
+        )
+
+        rows = self._session.execute(statement).scalars().all()
+
+        return [_to_article(row) for row in rows]
+
+    def save_embeddings(self, results: list[EmbeddingResult]) -> int:
+        """
+        성공한 임베딩을 기사에 반영하고 갱신 건수를 반환한다.
+
+        실패한 결과를 저장하면 다음 실행에서 재시도할 수 없으므로 제외한다.
+        """
+        embedded_at = datetime.now(UTC)
+        updated_count = 0
+
+        for result in results:
+            if not result.is_success:
+                continue
+
+            statement = (
+                update(ArticleRow)
+                .where(ArticleRow.url_hash == result.url_hash)
+                .values(
+                    embedding=result.vector,
+                    embedding_model=result.model_name,
+                    embedded_at=embedded_at,
+                )
+            )
+            updated_count += self._session.execute(statement).rowcount
+
+        return updated_count
 
 
 def _to_row_values(article: Article) -> dict:
@@ -50,3 +108,17 @@ def _to_row_values(article: Article) -> dict:
     values.pop("content", None)
 
     return values
+
+
+def _to_article(row: ArticleRow) -> Article:
+    """테이블 행을 도메인 모델로 변환한다."""
+    return Article(
+        source_name=row.source_name,
+        title=row.title,
+        url=row.url,
+        url_hash=row.url_hash,
+        collected_at=row.collected_at,
+        published_at=row.published_at,
+        author=row.author,
+        summary=row.summary,
+    )
