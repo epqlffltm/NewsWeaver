@@ -8,6 +8,7 @@ FastAPI가 아니라 CLI를 기본 진입점으로 둔다. 나중에 웹에서 �
 버튼을 붙이더라도 같은 함수를 호출하는 형태가 된다.
 """
 
+import logging
 from datetime import UTC, datetime
 
 from dotenv import load_dotenv
@@ -24,6 +25,7 @@ from news_weaver.db.tables import ArticleRow
 from news_weaver.deliver.render import build_subject, render_digest
 from news_weaver.deliver.smtp import SmtpMailSender
 from news_weaver.domain.article import Article
+from news_weaver.logging_config import configure_logging
 from news_weaver.selection.interests import INTEREST_TOPICS, MAX_ARTICLES_PER_RUN
 from news_weaver.selection.keyword import select_articles
 from news_weaver.summarize.ollama import OllamaSummarizer
@@ -32,12 +34,14 @@ from news_weaver.summarize.service import SummarizeReport, summarize_with_cache
 
 load_dotenv()
 
-# 오래된 기사를 다시 요약하지 않도록, 선별 대상을 최근 수집분으로 제한한다
+logger = logging.getLogger(__name__)
+
+# 오래된 기사가 매일 다시 후보에 오르지 않도록 선별 대상을 최근 수집분으로 제한한다
 RECENT_ARTICLE_LIMIT = 200
 
 
-def print_source_report(result: CollectionResult) -> None:
-    """소스 하나의 수집 결과를 한 줄로 출력한다."""
+def log_source_report(result: CollectionResult) -> None:
+    """소스 하나의 수집 결과를 한 줄로 기록한다."""
     status = "정상" if result.is_healthy else "장애"
     line = f"[{status}] {result.source_name:12} 수집 {result.article_count:3}건"
 
@@ -47,21 +51,21 @@ def print_source_report(result: CollectionResult) -> None:
     if result.error:
         line += f" / 원인: {result.error}"
 
-    print(line)
+    logger.info(line)
 
 
 def collect_articles(collected_at: datetime) -> list[Article]:
-    """모든 소스를 수집하고 결과를 출력한 뒤, 기사들을 한 목록으로 모은다."""
+    """모든 소스를 수집하고 결과를 기록한 뒤, 기사들을 한 목록으로 모은다."""
     results = collect_all_feeds(RSS_SOURCES, collected_at)
 
     articles: list[Article] = []
     for result in results:
-        print_source_report(result)
+        log_source_report(result)
         articles.extend(result.articles)
 
     unhealthy_sources = [r.source_name for r in results if not r.is_healthy]
     if unhealthy_sources:
-        print(f"장애 소스: {', '.join(unhealthy_sources)}")
+        logger.warning("장애 소스: %s", ", ".join(unhealthy_sources))
 
     return articles
 
@@ -134,7 +138,7 @@ def summarize_selected(articles: list[Article]) -> SummarizeReport:
 def deliver_digest(report: SummarizeReport, sent_at: datetime) -> None:
     """요약 결과를 메일로 보낸다."""
     if not report.summarized:
-        print("보낼 요약이 없어 발송을 건너뜁니다.")
+        logger.info("보낼 요약이 없어 발송을 건너뜁니다.")
         return
 
     subject = build_subject(sent_at, len(report.summarized))
@@ -143,36 +147,43 @@ def deliver_digest(report: SummarizeReport, sent_at: datetime) -> None:
     result = SmtpMailSender().send(subject, body)
 
     if result.is_sent:
-        print(f"발송 완료: {subject}")
+        logger.info("발송 완료: %s", subject)
     else:
-        print(f"발송 실패: {result.error}")
+        logger.error("발송 실패: %s", result.error)
 
 
 def run_ingest() -> None:
     """수집부터 발송까지 한 번의 배치를 실행한다."""
+    configure_logging()
+
     started_at = datetime.now(UTC)
-    print(f"실행 시각: {started_at.isoformat()}\n")
+    logger.info("배치 시작: %s", started_at.isoformat())
 
     collected = collect_articles(started_at)
     inserted_count = store_articles(collected)
-    print(f"\n수집 {len(collected)}건 / 신규 저장 {inserted_count}건")
+    logger.info("수집 %d건 / 신규 저장 %d건", len(collected), inserted_count)
 
     candidates = load_recent_articles(RECENT_ARTICLE_LIMIT)
     selected = select_articles(candidates, INTEREST_TOPICS, MAX_ARTICLES_PER_RUN)
-    print(f"선별 {len(selected)}건 (후보 {len(candidates)}건)")
+    logger.info("선별 %d건 (후보 %d건)", len(selected), len(candidates))
 
     if not selected:
-        print("선별된 기사가 없습니다.")
+        logger.info("선별된 기사가 없어 배치를 종료합니다.")
         return
 
     report = summarize_selected([item.article for item in selected])
-    print(f"요약 완료 / 캐시 {report.cache_hit_count}건 ")
-    print(f"/ 생성 {report.generated_count}건 / 실패 {len(report.failures)}건")
+    logger.info(
+        "요약 완료 / 캐시 %d건 / 생성 %d건 / 실패 %d건",
+        report.cache_hit_count,
+        report.generated_count,
+        len(report.failures),
+    )
 
     for failed_title, reason in report.failures:
-        print(f"  실패: {failed_title[:40]} — {reason}")
+        logger.warning("요약 실패: %s — %s", failed_title[:40], reason)
 
     deliver_digest(report, started_at)
+    logger.info("배치 종료")
 
 
 if __name__ == "__main__":

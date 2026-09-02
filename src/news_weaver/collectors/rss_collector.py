@@ -7,6 +7,7 @@ RSS 피드를 수집해 Article 목록으로 변환한다.
 파이프라인 뒷단이 다루는 단일한 표현으로 정규화하는 것이 이 모듈의 책임이다.
 """
 
+import logging
 import re
 from datetime import UTC, datetime, timedelta, timezone
 
@@ -24,6 +25,8 @@ TIMEZONE_MARKER_PATTERN = re.compile(r"(?:[+-]\d{2}:?\d{2}|Z|[A-Z]{2,4})\s*$")
 
 # 타임존 표기가 없는 피드는 한국 언론사 기준으로 KST로 간주한다
 KST = timezone(timedelta(hours=9))
+
+logger = logging.getLogger(__name__)
 
 
 def _has_timezone_marker(published_raw: str) -> bool:
@@ -109,10 +112,14 @@ def collect_feed(
     entries = parsed_feed.get("entries") or []
 
     if not entries:
+        error_message = str(parsed_feed.get("bozo_exception") or "항목이 없음")
+        # 피드는 예외 없이 0건을 반환하므로, 기록이 없으면 장애를 사후에 알 수 없다
+        logger.warning("피드 수집 실패: %s — %s", source_name, error_message)
+
         return CollectionResult(
             source_name=source_name,
             is_healthy=False,
-            error=str(parsed_feed.get("bozo_exception") or "항목이 없음"),
+            error=error_message,
         )
 
     articles: list[Article] = []
