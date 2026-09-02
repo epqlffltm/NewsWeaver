@@ -7,7 +7,7 @@
 그 결과를 다루는 파이프라인 로직을 검증하기 위해 즉시 응답하는 구현을 둔다.
 """
 
-from news_weaver.domain.article import Article
+from news_weaver.selection.dedupe import ArticleGroup
 from news_weaver.summarize.base import SummaryResult
 
 FAKE_MODEL_NAME = "fake"
@@ -15,29 +15,31 @@ FAKE_PROMPT_VERSION = "fake-v1"
 
 
 class FakeSummarizer:
-    """제목을 그대로 돌려주는 요약기. 실패를 재현할 수도 있다."""
+    """대표 기사의 제목을 돌려주는 요약기. 실패를 재현할 수도 있다."""
 
-    def __init__(self, failing_url_hashes: frozenset[str] = frozenset()) -> None:
+    def __init__(self, failing_content_keys: frozenset[str] = frozenset()) -> None:
         # 부분 실패 처리를 검증하려면 일부러 실패시킬 수단이 필요하다
-        self._failing_url_hashes = failing_url_hashes
+        self._failing_content_keys = failing_content_keys
 
-    def summarize(self, articles: list[Article]) -> list[SummaryResult]:
-        """각 기사에 대해 즉시 결과를 만들어 반환한다."""
-        return [self._summarize_one(article) for article in articles]
+    def summarize(self, groups: list[ArticleGroup]) -> list[SummaryResult]:
+        """각 그룹에 대해 즉시 결과를 만들어 반환한다."""
+        return [self._summarize_one(group) for group in groups]
 
-    def _summarize_one(self, article: Article) -> SummaryResult:
-        """기사 하나에 대한 결과를 만든다."""
-        if article.url_hash in self._failing_url_hashes:
+    def _summarize_one(self, group: ArticleGroup) -> SummaryResult:
+        """그룹 하나에 대한 결과를 만든다."""
+        if group.group_key in self._failing_content_keys:
             return SummaryResult(
-                url_hash=article.url_hash,
+                content_key=group.group_key,
                 error="의도적으로 실패시킨 항목",
                 model_name=FAKE_MODEL_NAME,
                 prompt_version=FAKE_PROMPT_VERSION,
             )
 
+        titles = " + ".join(item.article.title for item in group.members)
+
         return SummaryResult(
-            url_hash=article.url_hash,
-            summary_text=f"[요약] {article.title}",
+            content_key=group.group_key,
+            summary_text=f"[요약] {titles}",
             model_name=FAKE_MODEL_NAME,
             prompt_version=FAKE_PROMPT_VERSION,
         )

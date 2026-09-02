@@ -1,10 +1,10 @@
 # NewsWeaver/src/news_weaver/summarize/ollama.py
 
 """
-로컬 Ollama 서버를 호출해 기사를 요약한다.
+로컬 Ollama 서버를 호출해 기사 그룹을 요약한다.
 
 모델 추론은 하드웨어에 따라 건당 1~4분이 걸리므로, 한 건의 실패나 지연이
-전체 배치를 막지 않도록 기사마다 독립적으로 처리하고 실패를 결과로 담는다.
+전체 배치를 막지 않도록 그룹마다 독립적으로 처리하고 실패를 결과로 담는다.
 
 모델명과 서버 주소는 실행 환경마다 다르므로 설정에서 읽는다.
 """
@@ -14,9 +14,9 @@ import logging
 import requests
 
 from news_weaver.config import get_settings
-from news_weaver.domain.article import Article
+from news_weaver.selection.dedupe import ArticleGroup
 from news_weaver.summarize.base import SummaryResult
-from news_weaver.summarize.prompt import PROMPT_VERSION, build_summary_prompt
+from news_weaver.summarize.prompt import PROMPT_VERSION, build_briefing_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -37,36 +37,40 @@ class OllamaSummarizer:
         self._base_url = base_url or settings.ollama_base_url
         self._model_name = model_name or settings.ollama_model
 
-    def summarize(self, articles: list[Article]) -> list[SummaryResult]:
-        """기사들을 하나씩 요약한다. 실패한 건은 결과에 이유를 담는다."""
-        total = len(articles)
+    def summarize(self, groups: list[ArticleGroup]) -> list[SummaryResult]:
+        """그룹들을 하나씩 요약한다. 실패한 건은 결과에 이유를 담는다."""
+        total = len(groups)
         results: list[SummaryResult] = []
 
-        for index, article in enumerate(articles, start=1):
+        for index, group in enumerate(groups, start=1):
             # 건당 수십 초가 걸리므로 진행 기록이 없으면 멈춘 것과 구분되지 않는다
-            logger.info("요약 %d/%d: %s", index, total, article.title[:40])
-            results.append(self._summarize_one(article))
+            title = group.representative.article.title[:40]
+            logger.info("요약 %d/%d (출처 %d): %s", index, total, group.size, title)
+            results.append(self._summarize_one(group))
 
         return results
 
-    def _summarize_one(self, article: Article) -> SummaryResult:
-        """기사 하나를 요약한다. 예외는 결과로 변환해 호출자에게 전달한다."""
+    def _summarize_one(self, group: ArticleGroup) -> SummaryResult:
+        """그룹 하나를 요약한다. 예외는 결과로 변환해 호출자에게 전달한다."""
+        articles = [item.article for item in group.members]
+        title = group.representative.article.title[:40]
+
         try:
-            summary_text = self._request_generation(build_summary_prompt(article))
+            summary_text = self._request_generation(build_briefing_prompt(articles))
         except requests.RequestException as error:
-            logger.warning("요약 요청 실패: %s — %s", article.title[:40], error)
-            return self._failure(article, f"요청 실패: {error}")
+            logger.warning("요약 요청 실패: %s — %s", title, error)
+            return self._failure(group, f"요청 실패: {error}")
         except (KeyError, TypeError, ValueError) as error:
             # 서버가 예상과 다른 형식을 돌려줘도 한 건의 실패로 그쳐야 한다
-            logger.warning("요약 응답 형식 오류: %s — %s", article.title[:40], error)
-            return self._failure(article, f"응답 형식 오류: {error}")
+            logger.warning("요약 응답 형식 오류: %s — %s", title, error)
+            return self._failure(group, f"응답 형식 오류: {error}")
 
         if not summary_text:
-            logger.warning("요약 응답이 비어 있음: %s", article.title[:40])
-            return self._failure(article, "빈 응답")
+            logger.warning("요약 응답이 비어 있음: %s", title)
+            return self._failure(group, "빈 응답")
 
         return SummaryResult(
-            url_hash=article.url_hash,
+            content_key=group.group_key,
             summary_text=summary_text,
             model_name=self._model_name,
             prompt_version=PROMPT_VERSION,
@@ -87,10 +91,10 @@ class OllamaSummarizer:
 
         return response.json().get("response", "").strip()
 
-    def _failure(self, article: Article, reason: str) -> SummaryResult:
+    def _failure(self, group: ArticleGroup, reason: str) -> SummaryResult:
         """실패 결과를 만든다."""
         return SummaryResult(
-            url_hash=article.url_hash,
+            content_key=group.group_key,
             error=reason,
             model_name=self._model_name,
             prompt_version=PROMPT_VERSION,

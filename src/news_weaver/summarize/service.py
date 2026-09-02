@@ -1,7 +1,7 @@
 # NewsWeaver/src/news_weaver/summarize/service.py
 
 """
-캐시를 활용해 기사를 요약하는 흐름을 조립한다.
+캐시를 활용해 기사 그룹을 요약하는 흐름을 조립한다.
 
 요약은 건당 수십 초에서 수 분이 걸리므로, 이미 만들어둔 결과가 있으면
 모델을 부르지 않는 것이 이 계층의 핵심 책임이다. 배치 재실행이나 실패 후
@@ -14,15 +14,15 @@
 from dataclasses import dataclass
 
 from news_weaver.db.summary_repository import SummaryRepository
-from news_weaver.domain.article import Article
+from news_weaver.selection.dedupe import ArticleGroup
 from news_weaver.summarize.base import Summarizer, SummaryResult
 
 
 @dataclass(frozen=True, slots=True)
-class SummarizedArticle:
-    """기사와 그 요약문을 함께 묶은 것. 메일 본문을 만들 때 쓴다."""
+class SummarizedGroup:
+    """기사 그룹과 그 요약문을 함께 묶은 것. 메일 본문을 만들 때 쓴다."""
 
-    article: Article
+    group: ArticleGroup
     summary_text: str
 
 
@@ -31,7 +31,7 @@ class SummarizeReport:
     """한 번의 요약 실행 결과와 그 과정을 담는다."""
 
     # 입력으로 받은 선별 순서를 그대로 유지한다
-    summarized: list[SummarizedArticle]
+    summarized: list[SummarizedGroup]
 
     # 캐시로 처리한 건수. 요약 비용을 얼마나 아꼈는지 보여준다
     cache_hit_count: int
@@ -42,91 +42,93 @@ class SummarizeReport:
     # 그중 요약문을 얻은 건수
     generated_count: int
 
-    # 요약에 실패한 기사의 제목과 이유. 실패해도 나머지는 전달된다
+    # 요약에 실패한 대표 기사의 제목과 이유. 실패해도 나머지는 전달된다
     failures: list[tuple[str, str]]
 
 
 def _split_by_cache(
-    articles: list[Article],
+    groups: list[ArticleGroup],
     cached: dict[str, str],
-) -> list[Article]:
-    """캐시에 없어 새로 요약해야 하는 기사만 골라낸다."""
-    return [article for article in articles if article.url_hash not in cached]
+) -> list[ArticleGroup]:
+    """캐시에 없어 새로 요약해야 하는 그룹만 골라낸다."""
+    return [group for group in groups if group.group_key not in cached]
 
 
 def _index_results(results: list[SummaryResult]) -> dict[str, SummaryResult]:
-    """결과를 url_hash로 찾을 수 있게 사전으로 만든다."""
-    return {result.url_hash: result for result in results}
+    """결과를 content_key로 찾을 수 있게 사전으로 만든다."""
+    return {result.content_key: result for result in results}
 
 
 def _collect_failures(
-    articles: list[Article],
-    results_by_hash: dict[str, SummaryResult],
+    groups: list[ArticleGroup],
+    results_by_key: dict[str, SummaryResult],
 ) -> list[tuple[str, str]]:
-    """요약에 실패한 기사의 제목과 이유를 모은다."""
+    """요약에 실패한 그룹의 대표 제목과 이유를 모은다."""
     failures: list[tuple[str, str]] = []
 
-    for article in articles:
-        result = results_by_hash.get(article.url_hash)
+    for group in groups:
+        result = results_by_key.get(group.group_key)
         if result is not None and not result.is_success:
-            failures.append((article.title, result.error or "알 수 없는 오류"))
+            failures.append(
+                (group.representative.article.title, result.error or "알 수 없는 오류")
+            )
 
     return failures
 
 
 def _build_summarized(
-    articles: list[Article],
+    groups: list[ArticleGroup],
     cached: dict[str, str],
-    results_by_hash: dict[str, SummaryResult],
-) -> list[SummarizedArticle]:
+    results_by_key: dict[str, SummaryResult],
+) -> list[SummarizedGroup]:
     """
     입력 순서를 유지한 채 요약문을 붙인다.
 
     캐시에서 온 것과 새로 만든 것을 나눠 이어붙이면 선별 순위가 뒤섞이므로,
     원본 목록을 한 번 순회하며 조립한다.
     """
-    summarized: list[SummarizedArticle] = []
+    summarized: list[SummarizedGroup] = []
 
-    for article in articles:
-        summary_text = cached.get(article.url_hash)
+    for group in groups:
+        summary_text = cached.get(group.group_key)
 
         if summary_text is None:
-            result = results_by_hash.get(article.url_hash)
+            result = results_by_key.get(group.group_key)
             if result is None or not result.is_success:
                 continue
             summary_text = result.summary_text
 
-        summarized.append(SummarizedArticle(article, summary_text))
+        summarized.append(SummarizedGroup(group, summary_text))
 
     return summarized
 
 
 def summarize_with_cache(
-    articles: list[Article],
+    groups: list[ArticleGroup],
     summarizer: Summarizer,
     repository: SummaryRepository,
     model_name: str,
     prompt_version: str,
 ) -> SummarizeReport:
     """
-    캐시에 없는 기사만 요약하고, 새로 만든 요약은 저장한다.
+    캐시에 없는 그룹만 요약하고, 새로 만든 요약은 저장한다.
 
     모델과 프롬프트가 바뀌면 기존 캐시는 조회되지 않으므로 자동으로
-    다시 생성된다. 별도의 무효화 처리가 필요하지 않다.
+    다시 생성된다. 그룹 구성이 바뀌어도 키가 달라져 마찬가지로 재생성된다.
     """
-    url_hashes = [article.url_hash for article in articles]
-    cached = repository.find_cached(url_hashes, model_name, prompt_version)
+    content_keys = [group.group_key for group in groups]
+    cached = repository.find_cached(content_keys, model_name, prompt_version)
 
-    to_generate = _split_by_cache(articles, cached)
+    to_generate = _split_by_cache(groups, cached)
 
-    results_by_hash: dict[str, SummaryResult] = {}
+    results_by_key: dict[str, SummaryResult] = {}
     if to_generate:
         results = summarizer.summarize(to_generate)
         repository.save_summaries(results)
-        results_by_hash = _index_results(results)
+        results_by_key = _index_results(results)
 
-    summarized = _build_summarized(articles, cached, results_by_hash)
-    failures = _collect_failures(to_generate, results_by_hash)
+    summarized = _build_summarized(groups, cached, results_by_key)
+    failures = _collect_failures(to_generate, results_by_key)
 
     return SummarizeReport(
         summarized=summarized,

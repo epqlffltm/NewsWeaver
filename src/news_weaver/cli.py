@@ -25,9 +25,9 @@ from news_weaver.deliver.smtp import SmtpMailSender
 from news_weaver.domain.article import Article
 from news_weaver.embedding.ollama import OllamaEmbedder
 from news_weaver.logging_config import configure_logging
-from news_weaver.selection.dedupe import remove_near_duplicates
+from news_weaver.selection.dedupe import ArticleGroup, group_similar_articles
 from news_weaver.selection.interests import INTEREST_TOPICS, MAX_ARTICLES_PER_RUN
-from news_weaver.selection.keyword import ScoredArticle, select_articles
+from news_weaver.selection.keyword import select_articles
 from news_weaver.summarize.ollama import OllamaSummarizer
 from news_weaver.summarize.prompt import PROMPT_VERSION
 from news_weaver.summarize.service import SummarizeReport, summarize_with_cache
@@ -43,7 +43,7 @@ CANDIDATE_WINDOW_DAYS = 2
 # 한 번에 임베딩할 상한. 수집 규모가 커져도 배치 시간이 예측 가능하게 한다
 EMBEDDING_BATCH_LIMIT = 300
 
-# 중복 제거로 빠질 것을 감안해 상한보다 넉넉히 뽑는다
+# 여러 기사가 한 사건으로 묶이면 항목 수가 줄어드므로 넉넉히 뽑는다
 SELECTION_OVERSAMPLE = 2
 
 
@@ -93,7 +93,7 @@ def embed_pending_articles() -> int:
     """
     아직 벡터가 없는 기사에 임베딩을 생성한다.
 
-    중복 제거와 유사도 검색이 벡터를 전제하므로 선별보다 먼저 실행한다.
+    사건 묶기와 유사도 검색이 벡터를 전제하므로 선별보다 먼저 실행한다.
     """
     settings = get_settings()
     session_factory = get_session_factory()
@@ -128,12 +128,26 @@ def load_recent_articles(window_days: int) -> list[Article]:
         return ArticleRepository(session).find_recent_articles(since)
 
 
-def select_and_deduplicate(articles: list[Article]) -> list[ScoredArticle]:
-    """
-    관심 주제로 선별한 뒤 같은 사건을 다룬 기사를 하나로 줄인다.
+def log_group_composition(group: ArticleGroup) -> None:
+    """여러 기사가 묶인 그룹의 구성을 기록한다."""
+    if group.size == 1:
+        return
 
-    중복으로 빠지는 만큼 상한에 미달할 수 있으므로 넉넉히 뽑아두고,
-    제거 후에 상한을 적용한다.
+    others = ", ".join(item.article.source_name for item in group.others)
+    logger.info(
+        "사건 묶음 (%d건): %s ← %s",
+        group.size,
+        group.representative.article.title[:35],
+        others,
+    )
+
+
+def select_and_group(articles: list[Article]) -> list[ArticleGroup]:
+    """
+    관심 주제로 선별한 뒤 같은 사건을 다룬 기사를 하나로 묶는다.
+
+    묶인 기사를 버리지 않는 이유는 매체마다 강조하는 부분이 달라, 함께
+    요약하면 단일 기사보다 정보가 풍부해지기 때문이다.
     """
     settings = get_settings()
 
@@ -156,22 +170,22 @@ def select_and_deduplicate(articles: list[Article]) -> list[ScoredArticle]:
             settings.duplicate_similarity_threshold,
         )
 
-    report = remove_near_duplicates(selected, pairs)
+    groups = group_similar_articles(selected, pairs)
 
-    for removed_title, representative in report.removed:
-        logger.info("중복 제외: %s ← %s", removed_title[:35], representative[:35])
+    for group in groups:
+        log_group_composition(group)
 
-    return report.kept[:MAX_ARTICLES_PER_RUN]
+    return groups[:MAX_ARTICLES_PER_RUN]
 
 
-def summarize_selected(articles: list[Article]) -> SummarizeReport:
-    """선별된 기사를 캐시를 활용해 요약한다."""
+def summarize_selected(groups: list[ArticleGroup]) -> SummarizeReport:
+    """선별된 그룹을 캐시를 활용해 요약한다."""
     settings = get_settings()
     session_factory = get_session_factory()
 
     with session_factory() as session:
         report = summarize_with_cache(
-            articles,
+            groups,
             OllamaSummarizer(),
             SummaryRepository(session),
             settings.ollama_model,
@@ -214,14 +228,14 @@ def run_ingest() -> None:
     logger.info("임베딩 생성 %d건", embedded_count)
 
     candidates = load_recent_articles(CANDIDATE_WINDOW_DAYS)
-    selected = select_and_deduplicate(candidates)
+    selected = select_and_group(candidates)
     logger.info("선별 %d건 (후보 %d건)", len(selected), len(candidates))
 
     if not selected:
         logger.info("선별된 기사가 없어 배치를 종료합니다.")
         return
 
-    report = summarize_selected([item.article for item in selected])
+    report = summarize_selected(selected)
     logger.info(
         "요약 완료 / 캐시 %d건 / 요청 %d건 / 생성 %d건 / 실패 %d건",
         report.cache_hit_count,

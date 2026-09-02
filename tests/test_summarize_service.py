@@ -7,6 +7,8 @@
 from datetime import UTC, datetime
 
 from news_weaver.domain.article import Article
+from news_weaver.selection.dedupe import ArticleGroup
+from news_weaver.selection.keyword import ScoredArticle
 from news_weaver.summarize.base import SummaryResult
 from news_weaver.summarize.fake import FakeSummarizer
 from news_weaver.summarize.service import summarize_with_cache
@@ -26,19 +28,19 @@ class InMemorySummaryRepository:
     """
 
     def __init__(self) -> None:
-        # (url_hash, model_name, prompt_version) -> summary_text
+        # (content_key, model_name, prompt_version) -> summary_text
         self._store: dict[tuple[str, str, str], str] = {}
 
     def find_cached(
         self,
-        url_hashes: list[str],
+        content_keys: list[str],
         model_name: str,
         prompt_version: str,
     ) -> dict[str, str]:
         return {
-            url_hash: self._store[(url_hash, model_name, prompt_version)]
-            for url_hash in url_hashes
-            if (url_hash, model_name, prompt_version) in self._store
+            key: self._store[(key, model_name, prompt_version)]
+            for key in content_keys
+            if (key, model_name, prompt_version) in self._store
         }
 
     def save_summaries(self, results: list[SummaryResult]) -> int:
@@ -46,7 +48,7 @@ class InMemorySummaryRepository:
         for result in results:
             if not result.is_success:
                 continue
-            key = (result.url_hash, result.model_name, result.prompt_version)
+            key = (result.content_key, result.model_name, result.prompt_version)
             if key not in self._store:
                 self._store[key] = result.summary_text
                 saved += 1
@@ -60,26 +62,29 @@ class CountingSummarizer:
         self._inner = inner
         self.called_with_count = 0
 
-    def summarize(self, articles: list[Article]) -> list[SummaryResult]:
-        self.called_with_count += len(articles)
-        return self._inner.summarize(articles)
+    def summarize(self, groups: list[ArticleGroup]) -> list[SummaryResult]:
+        self.called_with_count += len(groups)
+        return self._inner.summarize(groups)
 
 
-def make_article(url_hash: str, title: str = "제목") -> Article:
-    """테스트용 기사를 만든다."""
-    return Article(
+def make_group(url_hash: str, title: str = "제목") -> ArticleGroup:
+    """구성원이 하나인 테스트용 그룹을 만든다."""
+    article = Article(
         source_name="테스트",
         title=title,
         url=f"https://example.com/{url_hash}",
         url_hash=url_hash,
         collected_at=COLLECTED_AT,
     )
+    scored = ScoredArticle(article=article, score=9, matched_topics=("AI",))
+
+    return ArticleGroup(representative=scored)
 
 
-def run(articles, summarizer, repository):
+def run(groups, summarizer, repository):
     """반복되는 인자를 묶어 호출한다."""
     return summarize_with_cache(
-        articles,
+        groups,
         summarizer,
         repository,
         MODEL_NAME,
@@ -88,11 +93,11 @@ def run(articles, summarizer, repository):
 
 
 def test_first_run_generates_all() -> None:
-    """캐시가 비어 있으면 모든 기사를 요약한다."""
-    articles = [make_article("a"), make_article("b")]
+    """캐시가 비어 있으면 모든 그룹을 요약한다."""
+    groups = [make_group("a"), make_group("b")]
     repository = InMemorySummaryRepository()
 
-    report = run(articles, FakeSummarizer(), repository)
+    report = run(groups, FakeSummarizer(), repository)
 
     assert report.generated_count == 2
     assert report.cache_hit_count == 0
@@ -105,25 +110,25 @@ def test_second_run_uses_cache() -> None:
 
     배치 재실행이나 실패 후 재시도에서 요약 비용을 다시 치르지 않기 위함이다.
     """
-    articles = [make_article("a"), make_article("b")]
+    groups = [make_group("a"), make_group("b")]
     repository = InMemorySummaryRepository()
-    run(articles, FakeSummarizer(), repository)
+    run(groups, FakeSummarizer(), repository)
 
     summarizer = CountingSummarizer(FakeSummarizer())
-    report = run(articles, summarizer, repository)
+    report = run(groups, summarizer, repository)
 
     assert summarizer.called_with_count == 0
     assert report.cache_hit_count == 2
     assert report.generated_count == 0
 
 
-def test_only_uncached_articles_are_generated() -> None:
+def test_only_uncached_groups_are_generated() -> None:
     """일부만 캐시에 있으면 나머지만 새로 요약한다."""
     repository = InMemorySummaryRepository()
-    run([make_article("a")], FakeSummarizer(), repository)
+    run([make_group("a")], FakeSummarizer(), repository)
 
     summarizer = CountingSummarizer(FakeSummarizer())
-    report = run([make_article("a"), make_article("b")], summarizer, repository)
+    report = run([make_group("a"), make_group("b")], summarizer, repository)
 
     assert summarizer.called_with_count == 1
     assert report.cache_hit_count == 1
@@ -136,12 +141,12 @@ def test_changed_prompt_version_invalidates_cache() -> None:
 
     프롬프트를 고쳤는데 옛 요약이 그대로 나오면 변경 효과를 확인할 수 없다.
     """
-    articles = [make_article("a")]
+    groups = [make_group("a")]
     repository = InMemorySummaryRepository()
-    run(articles, FakeSummarizer(), repository)
+    run(groups, FakeSummarizer(), repository)
 
     report = summarize_with_cache(
-        articles,
+        groups,
         FakeSummarizer(),
         repository,
         MODEL_NAME,
@@ -154,52 +159,62 @@ def test_changed_prompt_version_invalidates_cache() -> None:
 
 def test_failure_does_not_block_others() -> None:
     """일부가 실패해도 나머지 요약은 전달되고 실패 사유가 남는다."""
-    articles = [make_article("a", "정상"), make_article("b", "실패할 기사")]
-    summarizer = FakeSummarizer(failing_url_hashes=frozenset({"b"}))
+    groups = [make_group("a", "정상"), make_group("b", "실패할 기사")]
+    summarizer = FakeSummarizer(
+        failing_content_keys=frozenset({groups[1].group_key})
+    )
 
-    report = run(articles, summarizer, InMemorySummaryRepository())
+    report = run(groups, summarizer, InMemorySummaryRepository())
 
     assert len(report.summarized) == 1
     assert len(report.failures) == 1
     assert report.failures[0][0] == "실패할 기사"
 
 
-def test_failed_article_is_retried_next_run() -> None:
+def test_failed_group_is_retried_next_run() -> None:
     """
-    실패한 기사는 캐시에 남지 않아 다음 실행에서 다시 시도된다.
+    실패한 그룹은 캐시에 남지 않아 다음 실행에서 다시 시도된다.
 
-    일시적 오류로 실패한 기사가 영영 요약되지 않는 상황을 막는다.
+    일시적 오류로 실패한 항목이 영영 요약되지 않는 상황을 막는다.
     """
-    articles = [make_article("a")]
+    groups = [make_group("a")]
     repository = InMemorySummaryRepository()
-    run(articles, FakeSummarizer(failing_url_hashes=frozenset({"a"})), repository)
+    run(
+        groups,
+        FakeSummarizer(failing_content_keys=frozenset({groups[0].group_key})),
+        repository,
+    )
 
-    report = run(articles, FakeSummarizer(), repository)
+    report = run(groups, FakeSummarizer(), repository)
 
     assert report.generated_count == 1
     assert len(report.summarized) == 1
 
 
 def test_empty_input_returns_empty_report() -> None:
-    """선별된 기사가 없으면 아무것도 호출하지 않는다."""
+    """선별된 그룹이 없으면 아무것도 호출하지 않는다."""
     summarizer = CountingSummarizer(FakeSummarizer())
 
     report = run([], summarizer, InMemorySummaryRepository())
 
     assert summarizer.called_with_count == 0
     assert report.summarized == []
-    
+
+
 def test_result_keeps_input_order() -> None:
     """
     캐시 적중 여부가 결과 순서를 바꾸지 않는다.
 
     입력 순서는 선별 순위이므로, 캐시 때문에 순위가 뒤섞이면
-    관련도 높은 기사가 메일 아래로 밀려난다.
+    관련도 높은 항목이 메일 아래로 밀려난다.
     """
     repository = InMemorySummaryRepository()
-    run([make_article("b")], FakeSummarizer(), repository)
+    run([make_group("b")], FakeSummarizer(), repository)
 
-    articles = [make_article("a"), make_article("b"), make_article("c")]
-    report = run(articles, FakeSummarizer(), repository)
+    groups = [make_group("a"), make_group("b"), make_group("c")]
+    report = run(groups, FakeSummarizer(), repository)
 
-    assert [item.article.url_hash for item in report.summarized] == ["a", "b", "c"]
+    hashes = [
+        item.group.representative.article.url_hash for item in report.summarized
+    ]
+    assert hashes == ["a", "b", "c"]

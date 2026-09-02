@@ -31,6 +31,10 @@ CANDIDATE_WINDOW_DAYS = 2
 # 실제 배치가 메일에 담는 건수와 맞춘다
 EVALUATION_TOP_K = 10
 
+# 재현율은 메일 건수와 분리해 넓게 본다. 상한을 K로 두면 라벨이 늘 때마다
+# 분모만 커져 값이 떨어지므로, 변경 전후를 비교할 수 없다
+RECALL_TOP_K = 30
+
 
 def load_labels() -> dict[str, bool]:
     """사람이 매긴 정답 라벨을 읽어온다."""
@@ -77,10 +81,11 @@ def measure_recall(
     top_k: int,
 ) -> tuple[float, list[Article]]:
     """
-    관련 있다고 표시된 기사 중 상위 K건이 잡아낸 비율을 계산한다.
+    관련 있다고 표시된 기사 중 상위 K건 안에 든 비율을 계산한다.
 
-    상한이 K건이므로 관련 기사가 K건보다 많으면 재현율은 구조적으로
-    1에 도달할 수 없다. 절대값보다 변경 전후의 차이를 본다.
+    메일 상한보다 넓은 범위를 쓰는 이유는 선별 능력과 발송 건수를 분리해
+    보기 위해서다. 상한과 같게 두면 라벨을 늘릴 때마다 값이 떨어져
+    변경 전후를 비교할 수 없다.
     """
     relevant = [a for a in labeled_articles if labels[a.url_hash]]
 
@@ -112,10 +117,10 @@ def main() -> None:
     print(f"주제: {', '.join(t.name for t in INTEREST_TOPICS)}\n")
 
     precision, judged = measure_precision(labeled, labels, EVALUATION_TOP_K)
-    recall, missed = measure_recall(labeled, labels, EVALUATION_TOP_K)
+    recall, missed = measure_recall(labeled, labels, RECALL_TOP_K)
 
     print(f"Precision@{EVALUATION_TOP_K}: {precision:.2f}")
-    print(f"Recall: {recall:.2f}\n")
+    print(f"Recall@{RECALL_TOP_K}: {recall:.2f}\n")
 
     print(f"{'=' * 70}")
     print("선별된 기사")
@@ -126,7 +131,7 @@ def main() -> None:
 
     if missed:
         print(f"\n{'=' * 70}")
-        print("놓친 관련 기사")
+        print(f"상위 {RECALL_TOP_K}건에도 못 든 관련 기사")
         for article in missed:
             score = score_article(article, INTEREST_TOPICS).score
             print(f"  {score}점 {article.title[:45]}")

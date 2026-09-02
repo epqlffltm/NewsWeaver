@@ -6,6 +6,9 @@
 요약은 건당 수십 초에서 수 분이 걸리므로 재실행 때마다 다시 만들면 안 된다.
 다만 모델이나 프롬프트가 바뀌면 결과가 달라지므로, 그 조건을 조회 키에 포함해
 조건이 바뀐 요약은 캐시에 없는 것으로 취급한다.
+
+요약 대상은 단일 기사가 아니라 같은 사건으로 묶인 기사 그룹일 수 있어,
+기사 식별자가 아니라 그룹 구성을 반영한 키를 쓴다.
 """
 
 from sqlalchemy import select
@@ -24,28 +27,28 @@ class SummaryRepository:
 
     def find_cached(
         self,
-        url_hashes: list[str],
+        content_keys: list[str],
         model_name: str,
         prompt_version: str,
     ) -> dict[str, str]:
         """
-        이미 요약된 기사들을 url_hash에서 요약문으로 가는 사전으로 반환한다.
+        이미 요약된 대상을 content_key에서 요약문으로 가는 사전으로 반환한다.
 
-        기사마다 조회하면 왕복이 건수만큼 늘어나므로 한 번에 가져온다.
+        대상마다 조회하면 왕복이 건수만큼 늘어나므로 한 번에 가져온다.
         모델과 프롬프트가 다른 요약은 재사용할 수 없으므로 조회 조건에 포함한다.
         """
-        if not url_hashes:
+        if not content_keys:
             return {}
 
-        statement = select(SummaryRow.url_hash, SummaryRow.summary_text).where(
-            SummaryRow.url_hash.in_(url_hashes),
+        statement = select(SummaryRow.content_key, SummaryRow.summary_text).where(
+            SummaryRow.content_key.in_(content_keys),
             SummaryRow.model_name == model_name,
             SummaryRow.prompt_version == prompt_version,
         )
 
         rows = self._session.execute(statement).all()
 
-        return {row.url_hash: row.summary_text for row in rows}
+        return {row.content_key: row.summary_text for row in rows}
 
     def save_summaries(self, results: list[SummaryResult]) -> int:
         """
@@ -63,7 +66,7 @@ class SummaryRepository:
             insert(SummaryRow)
             .values(rows)
             .on_conflict_do_nothing(
-                index_elements=["url_hash", "model_name", "prompt_version"]
+                index_elements=["content_key", "model_name", "prompt_version"]
             )
             .returning(SummaryRow.id)
         )
@@ -76,7 +79,7 @@ class SummaryRepository:
 def _to_row_values(result: SummaryResult) -> dict:
     """요약 결과를 테이블 컬럼 값으로 변환한다."""
     return {
-        "url_hash": result.url_hash,
+        "content_key": result.content_key,
         "summary_text": result.summary_text,
         "model_name": result.model_name,
         "prompt_version": result.prompt_version,

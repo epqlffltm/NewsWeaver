@@ -69,7 +69,7 @@ class ArticleRow(Base):
     
 class SummaryRow(Base):
     """
-    기사 요약 캐시.
+    기사 브리핑 캐시.
 
     요약은 건당 수십 초에서 수 분이 걸리므로 배치를 재실행할 때마다 다시
     만들면 안 된다. 다만 모델이나 프롬프트가 바뀌면 결과가 달라지므로,
@@ -80,9 +80,9 @@ class SummaryRow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # articles.url_hash를 가리킨다. 외래키를 걸지 않아 요약 결과가
-    # DB의 내부 id를 몰라도 되게 한다
-    url_hash: Mapped[str] = mapped_column(String(64))
+    # 요약 대상을 식별하는 키. 단일 기사가 아니라 같은 사건으로 묶인
+    # 기사 그룹일 수 있으므로 url_hash가 아니라 별도 키를 쓴다
+    content_key: Mapped[str] = mapped_column(String(64))
 
     summary_text: Mapped[str] = mapped_column(Text)
 
@@ -95,12 +95,12 @@ class SummaryRow(Base):
     )
 
     __table_args__ = (
-        # 같은 기사라도 모델이나 프롬프트가 다르면 별개의 요약으로 본다
+        # 같은 대상이라도 모델이나 프롬프트가 다르면 별개의 요약으로 본다
         UniqueConstraint(
-            "url_hash",
+            "content_key",
             "model_name",
             "prompt_version",
-            name="uq_summaries_article_and_config",
+            name="uq_summaries_content_and_config",
         ),
-        Index("ix_summaries_url_hash", "url_hash"),
+        Index("ix_summaries_content_key", "content_key"),
     )
