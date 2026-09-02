@@ -10,7 +10,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, String, Text
+from sqlalchemy import DateTime, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -46,4 +46,42 @@ class ArticleRow(Base):
         # "최근 기사 N건" 조회가 주 사용 패턴이므로 발행 시각 역순 인덱스를 둔다
         Index("ix_articles_published_at", published_at.desc()),
         Index("ix_articles_source_name", source_name),
+    )
+    
+class SummaryRow(Base):
+    """
+    기사 요약 캐시.
+
+    요약은 건당 수십 초에서 수 분이 걸리므로 배치를 재실행할 때마다 다시
+    만들면 안 된다. 다만 모델이나 프롬프트가 바뀌면 결과가 달라지므로,
+    그 조건을 키에 포함해 조건이 바뀌면 자동으로 다시 생성되게 한다.
+    """
+
+    __tablename__ = "summaries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    # articles.url_hash를 가리킨다. 외래키를 걸지 않아 요약 결과가
+    # DB의 내부 id를 몰라도 되게 한다
+    url_hash: Mapped[str] = mapped_column(String(64))
+
+    summary_text: Mapped[str] = mapped_column(Text)
+
+    # 어떤 조건에서 만든 요약인지. 캐시 적중 판정의 키이자 품질 추적의 근거
+    model_name: Mapped[str] = mapped_column(String(100))
+    prompt_version: Mapped[str] = mapped_column(String(20))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        # 같은 기사라도 모델이나 프롬프트가 다르면 별개의 요약으로 본다
+        UniqueConstraint(
+            "url_hash",
+            "model_name",
+            "prompt_version",
+            name="uq_summaries_article_and_config",
+        ),
+        Index("ix_summaries_url_hash", "url_hash"),
     )
