@@ -29,7 +29,12 @@ def _require_env(key: str) -> str:
     return value
 
 
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """설정을 한 번만 읽어 재사용한다."""
-    return Settings(database_url=_require_env("DATABASE_URL"))
+    return Settings(
+        database_url=_require_env("DATABASE_URL"),
+        ollama_base_url=_require_env("OLLAMA_BASE_URL"),
+        ollama_model=_require_env("OLLAMA_MODEL"),
+    )
