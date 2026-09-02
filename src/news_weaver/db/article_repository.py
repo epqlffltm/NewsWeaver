@@ -4,14 +4,14 @@
 기사 저장과 조회를 담당한다.
 
 SQL과 테이블 구조에 대한 지식을 이 모듈 안에 가둬, 파이프라인 상위 단계가
-저장 방식을 몰라도 되게 한다. 나중에 벡터 검색처럼 ORM으로 표현하기 어려운
-쿼리를 raw SQL로 작성하더라도 그 범위는 이 클래스 내부에 머문다.
+저장 방식을 몰라도 되게 한다. 벡터 검색처럼 ORM으로 표현하기 어려운 쿼리를
+raw SQL로 작성하더라도 그 범위는 이 클래스 내부에 머문다.
 """
 
 from dataclasses import asdict
 from datetime import UTC, datetime
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -98,6 +98,52 @@ class ArticleRepository:
 
         return updated_count
 
+    def find_similarity_pairs(
+        self,
+        url_hashes: list[str],
+        model_name: str,
+        minimum_similarity: float,
+    ) -> list[tuple[str, str, float]]:
+        """
+        주어진 기사들 사이에서 임계값 이상 유사한 쌍을 찾는다.
+
+        준중복 판정에는 개별 기사의 이웃이 아니라 후보 집합 내부의 관계가
+        필요하다. 쌍마다 조회하면 왕복이 제곱으로 늘어나므로 한 번에 가져온다.
+
+        a.url_hash < b.url_hash 조건으로 같은 쌍이 두 번 나오는 것을 막는다.
+        """
+        if len(url_hashes) < 2:
+            return []
+
+        statement = text("""
+            SELECT
+                a.url_hash AS left_hash,
+                b.url_hash AS right_hash,
+                1 - (a.embedding <=> b.embedding) AS similarity
+            FROM articles AS a
+            JOIN articles AS b
+              ON a.url_hash < b.url_hash
+            WHERE a.url_hash = ANY(:hashes)
+              AND b.url_hash = ANY(:hashes)
+              AND a.embedding IS NOT NULL
+              AND b.embedding IS NOT NULL
+              AND a.embedding_model = :model_name
+              AND b.embedding_model = :model_name
+              AND 1 - (a.embedding <=> b.embedding) >= :minimum
+            ORDER BY similarity DESC
+        """)
+
+        rows = self._session.execute(
+            statement,
+            {
+                "hashes": url_hashes,
+                "model_name": model_name,
+                "minimum": minimum_similarity,
+            },
+        ).all()
+
+        return [(row.left_hash, row.right_hash, row.similarity) for row in rows]
+
 
 def _to_row_values(article: Article) -> dict:
     """도메인 모델을 테이블에 맞는 딕셔너리로 변환한다."""
@@ -111,7 +157,21 @@ def _to_row_values(article: Article) -> dict:
 
 
 def _to_article(row: ArticleRow) -> Article:
-    """테이블 행을 도메인 모델로 변환한다."""
+    """ORM 행을 도메인 모델로 변환한다."""
+    return Article(
+        source_name=row.source_name,
+        title=row.title,
+        url=row.url,
+        url_hash=row.url_hash,
+        collected_at=row.collected_at,
+        published_at=row.published_at,
+        author=row.author,
+        summary=row.summary,
+    )
+
+
+def _row_to_article(row) -> Article:
+    """raw SQL 결과 행을 도메인 모델로 변환한다."""
     return Article(
         source_name=row.source_name,
         title=row.title,

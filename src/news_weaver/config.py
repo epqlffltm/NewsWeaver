@@ -15,6 +15,10 @@ from functools import lru_cache
 @dataclass(frozen=True, slots=True)
 class Settings:
     """애플리케이션 실행에 필요한 설정값."""
+    
+    # 이 값 이상이면 같은 사건으로 본다. 모델마다 유사도 분포가 다르므로
+    # 코드에 고정하지 않고 조정 가능하게 둔다
+    duplicate_similarity_threshold: float
 
     database_url: str
 
@@ -59,4 +63,7 @@ def get_settings() -> Settings:
         smtp_username=_require_env("SMTP_USERNAME"),
         smtp_password=_require_env("SMTP_PASSWORD"),
         mail_recipient=_require_env("MAIL_RECIPIENT"),
+        duplicate_similarity_threshold=float(
+            _require_env("DUPLICATE_SIMILARITY_THRESHOLD")
+        ),
     )
