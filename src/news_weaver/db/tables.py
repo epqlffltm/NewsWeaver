@@ -10,8 +10,13 @@
 
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# 벡터 컬럼 타입에 고정되는 값. 변경하려면 마이그레이션과 전체 재임베딩이 필요하다.
+# .env의 EMBEDDING_DIMENSION과 반드시 일치해야 한다
+EMBEDDING_DIMENSION = 768
 
 
 class Base(DeclarativeBase):
@@ -41,6 +46,20 @@ class ArticleRow(Base):
     )
     author: Mapped[str | None] = mapped_column(String(100), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
+        # 임베딩은 선별과 준중복 판정에 쓰인다. 아직 생성되지 않은 기사도 있으므로
+    # nullable이며, 모델이 바뀌면 점진적으로 다시 만든다
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIMENSION), nullable=True
+    )
+
+    # 어떤 모델로 만든 벡터인지. 벡터 공간이 다르면 유사도 비교가 무의미하므로
+    # 모델 교체 시 대상을 골라내는 근거가 된다
+    embedding_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    embedded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         # "최근 기사 N건" 조회가 주 사용 패턴이므로 발행 시각 역순 인덱스를 둔다
