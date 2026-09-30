@@ -1,7 +1,7 @@
 # NewsWeaver/scripts/spike_check_dedupe.py
 
 """
-준중복 제거가 실제 선별 결과에서 무엇을 걸러내는지 확인한다.
+사건 묶기가 실제 선별 결과에서 무엇을 한 그룹으로 묶는지 확인한다.
 
 임계값은 모델의 유사도 분포에 따라 달라지므로 추측으로 정할 수 없다.
 여러 값을 나란히 적용해 무엇이 묶이고 무엇이 남는지 눈으로 비교해야
@@ -16,7 +16,7 @@ from news_weaver.db.article_repository import ArticleRepository
 from news_weaver.db.engine import get_session_factory
 from news_weaver.db.tables import ArticleRow
 from news_weaver.domain.article import Article
-from news_weaver.selection.dedupe import remove_near_duplicates
+from news_weaver.selection.dedupe import group_similar_articles
 from news_weaver.selection.interests import INTEREST_TOPICS, MAX_ARTICLES_PER_RUN
 from news_weaver.selection.keyword import select_articles
 
@@ -70,15 +70,18 @@ def main() -> None:
                 settings.embedding_model,
                 threshold,
             )
-            report = remove_near_duplicates(selected, pairs)
+            # 제거 방식에서 그룹 방식으로 바뀌어, 제외 건수 대신 묶인 구성을 본다
+            groups = group_similar_articles(selected, pairs)
+            merged = [group for group in groups if group.size > 1]
 
             print(f"\n{'=' * 70}")
-            print(f"임계값 {threshold} → 남김 {len(report.kept)}건 ")
-            print(f"/ 제외 {len(report.removed)}건")
+            print(f"임계값 {threshold} → 그룹 {len(groups)}개 ")
+            print(f"/ 여러 기사가 묶인 그룹 {len(merged)}개")
 
-            for removed_title, representative in report.removed:
-                print(f"  제외: {removed_title[:40]}")
-                print(f"    ← {representative[:40]}")
+            for group in merged:
+                print(f"  대표: {group.representative.article.title[:40]}")
+                for item in group.others:
+                    print(f"    ← {item.article.title[:40]}")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,10 @@ RSS 수집기가 소스별 형식 차이와 피드 장애를 올바르게 처리
 import time
 from datetime import UTC, datetime
 
+import pytest
+import requests
+
+from news_weaver.collectors import rss_collector
 from news_weaver.collectors.rss_collector import (
     collect_all_feeds,
     collect_feed,
@@ -16,6 +20,33 @@ from news_weaver.collectors.rss_collector import (
 from news_weaver.collectors.sources import RssSource
 
 COLLECTED_AT = datetime(2026, 9, 1, 6, 0, tzinfo=UTC)
+
+# 다운로드 자체를 검증하는 테스트는 가짜로 바꾸기 전의 원래 함수를 쓴다
+REAL_DOWNLOAD = rss_collector._download_feed
+
+
+@pytest.fixture(autouse=True)
+def fake_download(monkeypatch):
+    """
+    네트워크 대신 URL 자체를 본문으로 돌려준다.
+
+    파싱을 흉내 내는 테스트가 URL로 소스를 구분할 수 있게 하기 위함이다.
+    """
+    monkeypatch.setattr(
+        rss_collector, "_download_feed", lambda url: url.encode("utf-8")
+    )
+
+
+class FakeResponse:
+    """requests.get 결과를 흉내 낸다."""
+
+    def __init__(self, status_code: int, content: bytes = b"") -> None:
+        self.status_code = status_code
+        self.content = content
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} Error")
 
 
 def test_offset_marked_time_is_kept_as_utc() -> None:
@@ -187,8 +218,8 @@ def test_collect_all_feeds_keeps_failures(monkeypatch) -> None:
     한 소스가 실패해도 나머지 소스의 수집 결과는 유지된다.
     """
 
-    def fake_parse(url):
-        if "broken" in url:
+    def fake_parse(content):
+        if b"broken" in content:
             return {"entries": [], "bozo_exception": "syntax error"}
         return {"entries": [{"title": "기사", "link": "https://example.com/1"}]}
 
@@ -207,3 +238,61 @@ def test_collect_all_feeds_keeps_failures(monkeypatch) -> None:
     assert results[0].is_healthy is True
     assert results[0].article_count == 1
     assert results[1].is_healthy is False
+
+def test_download_uses_timeout_and_user_agent(monkeypatch) -> None:
+    """
+    피드를 받을 때 타임아웃과 UA를 지정하고 리다이렉트를 따라간다.
+
+    타임아웃이 없으면 응답 없는 서버 하나가 배치 전체를 멈춘다.
+    """
+    captured = {}
+
+    def fake_get(url, **kwargs):
+        captured.update(kwargs)
+        return FakeResponse(200, b"<rss/>")
+
+    monkeypatch.setattr(rss_collector, "_download_feed", REAL_DOWNLOAD)
+    monkeypatch.setattr(rss_collector.requests, "get", fake_get)
+
+    content = rss_collector._download_feed("https://example.com/rss")
+
+    assert content == b"<rss/>"
+    assert captured["timeout"] == rss_collector.FEED_TIMEOUT_SECONDS
+    assert captured["allow_redirects"] is True
+    assert "NewsWeaver" in captured["headers"]["User-Agent"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [requests.Timeout("read timed out"), requests.ConnectionError("refused")],
+)
+def test_collect_feed_marks_network_error_as_unhealthy(monkeypatch, error) -> None:
+    """타임아웃이나 연결 실패는 예외 대신 장애 결과로 돌려준다."""
+
+    def fake_get(url, **kwargs):
+        raise error
+
+    monkeypatch.setattr(rss_collector, "_download_feed", REAL_DOWNLOAD)
+    monkeypatch.setattr(rss_collector.requests, "get", fake_get)
+
+    result = collect_feed("테스트", "https://example.com/rss", COLLECTED_AT)
+
+    assert result.is_healthy is False
+    assert "다운로드 실패" in result.error
+
+
+def test_collect_feed_marks_http_error_as_unhealthy(monkeypatch) -> None:
+    """
+    HTTP 오류는 파싱하지 않고 장애로 기록한다.
+
+    오류 페이지를 피드로 파싱하면 "항목 없음"으로만 남아 원인을 알 수 없다.
+    """
+    monkeypatch.setattr(rss_collector, "_download_feed", REAL_DOWNLOAD)
+    monkeypatch.setattr(
+        rss_collector.requests, "get", lambda url, **kwargs: FakeResponse(503)
+    )
+
+    result = collect_feed("테스트", "https://example.com/rss", COLLECTED_AT)
+
+    assert result.is_healthy is False
+    assert "503" in result.error

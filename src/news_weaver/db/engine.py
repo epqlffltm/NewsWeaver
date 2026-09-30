@@ -12,13 +12,18 @@ from functools import lru_cache
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from news_weaver.config import get_settings
+from news_weaver.config import get_database_url
 
 
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
-    """커넥션 풀을 가진 엔진을 한 번만 생성해 재사용한다."""
-    return create_engine(get_settings().database_url, future=True)
+    """
+    커넥션 풀을 가진 엔진을 한 번만 생성해 재사용한다.
+
+    DB 주소만 읽는다. 평가·스파이크 스크립트처럼 DB만 쓰는 작업이 SMTP·Ollama
+    설정까지 요구하지 않게 하기 위함이다.
+    """
+    return create_engine(get_database_url(), future=True)
 
 @lru_cache(maxsize=1)
 def get_session_factory() -> sessionmaker[Session]:

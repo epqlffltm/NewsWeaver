@@ -11,6 +11,8 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 
+from news_weaver.db.tables import EMBEDDING_DIMENSION
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -26,8 +28,8 @@ class Settings:
     ollama_base_url: str
     ollama_model: str
 
-    # 임베딩 차원은 벡터 컬럼 타입으로 스키마에 고정되므로,
-    # 설정과 스키마가 어긋나면 조용히 실패한다. 검증에 쓰기 위해 함께 읽는다
+    # 임베딩 차원은 벡터 컬럼 타입으로 스키마에 고정되므로, 설정과 스키마가
+    # 어긋나면 임베딩 저장 단계에서야 실패한다. get_settings에서 미리 검증한다
     embedding_model: str
     embedding_dimension: int
 
@@ -49,15 +51,43 @@ def _require_env(key: str) -> str:
     return value
 
 
+def get_database_url() -> str:
+    """
+    DB 접속 주소만 읽는다.
+
+    마이그레이션처럼 DB만 필요한 작업이 SMTP·Ollama 설정까지 요구하면
+    CI나 새 환경에서 불필요한 값을 채워야 하므로, 전체 설정과 분리해 둔다.
+    """
+    return _require_env("DATABASE_URL")
+
+
+def _validate_embedding_dimension(configured: int) -> None:
+    """
+    설정한 임베딩 차원이 스키마의 벡터 컬럼 차원과 같은지 확인한다.
+
+    어긋나면 수집·요약이 다 끝난 뒤 임베딩 저장에서 DB 오류로 멈추므로,
+    배치 시작 시점에 원인을 알 수 있는 메시지로 바로 실패시킨다.
+    """
+    if configured != EMBEDDING_DIMENSION:
+        raise RuntimeError(
+            f"EMBEDDING_DIMENSION={configured}이 스키마의 벡터 차원 "
+            f"{EMBEDDING_DIMENSION}과 다릅니다. 모델을 바꿨다면 "
+            "db/tables.py와 마이그레이션을 함께 수정하세요."
+        )
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """설정을 한 번만 읽어 재사용한다."""
+    """설정을 한 번만 읽어 재사용한다. 잘못된 설정은 여기서 바로 실패시킨다."""
+    embedding_dimension = int(_require_env("EMBEDDING_DIMENSION"))
+    _validate_embedding_dimension(embedding_dimension)
+
     return Settings(
-        database_url=_require_env("DATABASE_URL"),
+        database_url=get_database_url(),
         ollama_base_url=_require_env("OLLAMA_BASE_URL"),
         ollama_model=_require_env("OLLAMA_MODEL"),
         embedding_model=_require_env("EMBEDDING_MODEL"),
-        embedding_dimension=int(_require_env("EMBEDDING_DIMENSION")),
+        embedding_dimension=embedding_dimension,
         smtp_host=_require_env("SMTP_HOST"),
         smtp_port=int(_require_env("SMTP_PORT")),
         smtp_username=_require_env("SMTP_USERNAME"),

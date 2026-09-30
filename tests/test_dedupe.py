@@ -210,3 +210,63 @@ def test_take_representatives_returns_one_per_group() -> None:
 def test_empty_input() -> None:
     """선별된 기사가 없어도 실패하지 않는다."""
     assert group_similar_articles([], []) == []
+
+def test_groups_bridged_by_later_article_are_merged() -> None:
+    """
+    나중에 나온 기사가 앞선 두 그룹을 이으면 하나로 합쳐진다.
+
+    입력이 C, A, B 순이고 A-B, B-C만 유사하면, C와 A가 먼저 따로 그룹을
+    만든다. 기존 그룹에 하나씩 붙이는 방식은 B가 둘을 이어도 합치지 못했다.
+    """
+    scored = [
+        make_scored("c", "C", 9),
+        make_scored("a", "A", 6),
+        make_scored("b", "B", 3),
+    ]
+    pairs = [("a", "b", 0.7), ("b", "c", 0.7)]
+
+    groups = group_similar_articles(scored, pairs)
+
+    assert len(groups) == 1
+    assert groups[0].representative.article.url_hash == "c"
+    assert [item.article.url_hash for item in groups[0].others] == ["a", "b"]
+
+
+def test_grouping_does_not_depend_on_input_order() -> None:
+    """
+    입력 순서를 바꿔도 같은 구성의 그룹이 나온다.
+
+    group_key가 요약 캐시 키이므로, 순서에 따라 구성이 달라지면 같은
+    사건을 매번 다시 요약하게 된다.
+    """
+    items = {
+        key: make_scored(key, key.upper(), 5)
+        for key in ("a", "b", "c", "d", "e")
+    }
+    pairs = [("a", "b", 0.7), ("b", "c", 0.7), ("d", "e", 0.7)]
+
+    orders = (
+        ["a", "b", "c", "d", "e"],
+        ["c", "a", "b", "e", "d"],
+        ["e", "c", "d", "b", "a"],
+    )
+    results = [
+        {
+            group.group_key
+            for group in group_similar_articles([items[k] for k in order], pairs)
+        }
+        for order in orders
+    ]
+
+    assert results[0] == results[1] == results[2]
+    assert len(results[0]) == 2
+
+
+def test_pair_outside_candidates_is_ignored() -> None:
+    """후보에 없는 기사가 섞인 쌍은 그룹을 잇지 않는다."""
+    scored = [make_scored("a", "A", 9), make_scored("b", "B", 6)]
+    pairs = [("a", "x", 0.9), ("x", "b", 0.9)]
+
+    groups = group_similar_articles(scored, pairs)
+
+    assert len(groups) == 2

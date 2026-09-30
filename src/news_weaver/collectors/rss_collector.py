@@ -12,6 +12,7 @@ import re
 from datetime import UTC, datetime, timedelta, timezone
 
 import feedparser
+import requests
 
 from news_weaver.collectors.result import CollectionResult
 from news_weaver.collectors.sources import RssSource
@@ -27,6 +28,13 @@ TIMEZONE_MARKER_PATTERN = re.compile(r"(?:[+-]\d{2}:?\d{2}|Z|[A-Z]{2,4})\s*$")
 
 # 타임존 표기가 없는 피드는 한국 언론사 기준으로 KST로 간주한다
 KST = timezone(timedelta(hours=9))
+
+# feedparser.parse(url)은 타임아웃이 없어 응답 없는 서버 하나가 배치 전체를
+# 멈출 수 있다. 직접 받아오며 제한을 건다. 피드는 작아서 10초면 충분하다
+FEED_TIMEOUT_SECONDS = 10
+
+# 기본 UA(python-requests)를 막는 언론사가 있어 식별 가능한 값을 보낸다
+FEED_USER_AGENT = "NewsWeaver/0.1 (+https://github.com/epqlffltm/NewsWeaver)"
 
 # 소스에 따라 발행 시각을 published 또는 updated로 제공한다
 PUBLISHED_FIELD_PAIRS = (
@@ -117,6 +125,23 @@ def to_article(entry, source_name: str, collected_at: datetime) -> Article | Non
     )
 
 
+def _download_feed(feed_url: str) -> bytes:
+    """
+    피드 원문을 받아온다.
+
+    리다이렉트는 따라가되 4xx·5xx는 예외로 올린다. 오류 페이지 HTML을
+    피드로 파싱하면 "항목 없음"으로만 기록되어 원인을 알 수 없기 때문이다.
+    """
+    response = requests.get(
+        feed_url,
+        headers={"User-Agent": FEED_USER_AGENT},
+        timeout=FEED_TIMEOUT_SECONDS,
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+    return response.content
+
+
 def collect_feed(
     source_name: str,
     feed_url: str,
@@ -126,9 +151,22 @@ def collect_feed(
     RSS 피드 하나를 수집해 Article 목록과 건강 상태를 함께 반환한다.
 
     feedparser는 파싱에 실패해도 예외 대신 빈 결과를 돌려주므로,
-    항목 수가 0인 경우를 정상 상태와 구분해 기록한다.
+    항목 수가 0인 경우를 정상 상태와 구분해 기록한다. 다운로드 실패
+    (타임아웃, HTTP 오류)도 같은 방식으로 장애 결과에 담는다.
     """
-    parsed_feed = feedparser.parse(feed_url)
+    try:
+        content = _download_feed(feed_url)
+    except requests.RequestException as error:
+        error_message = f"다운로드 실패: {error}"
+        logger.warning("피드 수집 실패: %s — %s", source_name, error_message)
+
+        return CollectionResult(
+            source_name=source_name,
+            is_healthy=False,
+            error=error_message,
+        )
+
+    parsed_feed = feedparser.parse(content)
     entries = parsed_feed.get("entries") or []
 
     if not entries:

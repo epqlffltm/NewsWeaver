@@ -8,10 +8,19 @@
 두 표현 사이의 변환은 Repository가 담당한다.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Date,
+    DateTime,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # 벡터 컬럼 타입에 고정되는 값. 변경하려면 마이그레이션과 전체 재임베딩이 필요하다.
@@ -62,8 +71,10 @@ class ArticleRow(Base):
     )
 
     __table_args__ = (
-        # "최근 기사 N건" 조회가 주 사용 패턴이므로 발행 시각 역순 인덱스를 둔다
-        Index("ix_articles_published_at", published_at.desc()),
+        # 선별 후보 조회(find_recent_articles)와 임베딩 대상 조회가 모두 수집
+        # 시각으로 거르고 정렬하므로 수집 시각 역순 인덱스를 둔다. 발행 시각은
+        # 소스마다 비어 있을 수 있어 조회 조건으로 쓰지 않으므로 인덱스가 없다
+        Index("ix_articles_collected_at", collected_at.desc()),
         Index("ix_articles_source_name", source_name),
     )
     
@@ -103,4 +114,35 @@ class SummaryRow(Base):
             name="uq_summaries_content_and_config",
         ),
         Index("ix_summaries_content_key", "content_key"),
+    )
+
+
+class DeliveryRow(Base):
+    """
+    다이제스트 발송 이력.
+
+    선별 후보가 최근 며칠치라, 기록이 없으면 이미 보낸 기사가 다음 날 다시
+    실리고 같은 날 재실행하면 두 번 발송된다. 발송에 성공한 경우에만 남긴다.
+    """
+
+    __tablename__ = "deliveries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    # "오늘 이미 보냈는가"의 기준. 한국 시간 날짜로 저장한다
+    delivery_date: Mapped[date] = mapped_column(Date)
+
+    recipient: Mapped[str] = mapped_column(String(320))
+    subject: Mapped[str] = mapped_column(Text)
+
+    # 실린 브리핑의 그룹 키와 구성 기사. 발송 단위로 한 번에 쓰고 읽으므로
+    # 별도 테이블 대신 배열로 둔다
+    content_keys: Mapped[list[str]] = mapped_column(ARRAY(String(64)))
+    url_hashes: Mapped[list[str]] = mapped_column(ARRAY(String(64)))
+
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        # 강제 재발송을 허용하므로 유일 제약 대신 조회용 인덱스만 둔다
+        Index("ix_deliveries_date_recipient", "delivery_date", "recipient"),
     )

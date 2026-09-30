@@ -1,0 +1,6 @@
+{"collected_at": "2026-09-02T06:00:00+00:00", "label": true, "published_at": null, "source_name": "테스트", "split": "test", "summary": "AI 가속기 발표", "title": "AI 칩 공개", "url": "https://example.com/a", "url_hash": "a"}
+{"collected_at": "2026-09-02T06:00:00+00:00", "label": false, "published_at": null, "source_name": "테스트", "split": "test", "summary": null, "title": "AI 규제 논의", "url": "https://example.com/b", "url_hash": "b"}
+{"collected_at": "2026-09-02T06:00:00+00:00", "label": true, "published_at": null, "source_name": "테스트", "split": "test", "summary": null, "title": "AI 투자 확대", "url": "https://example.com/c", "url_hash": "c"}
+{"collected_at": "2026-09-02T06:00:00+00:00", "label": false, "published_at": null, "source_name": "테스트", "split": "test", "summary": null, "title": "주말 날씨", "url": "https://example.com/d", "url_hash": "d"}
+{"collected_at": "2026-09-02T06:00:00+00:00", "label": true, "published_at": null, "source_name": "테스트", "split": "test", "summary": null, "title": "프로야구 결산", "url": "https://example.com/e", "url_hash": "e"}
+{"collected_at": "2026-09-02T06:00:00+00:00", "label": false, "published_at": null, "source_name": "테스트", "split": "dev", "summary": null, "title": "가을 요리", "url": "https://example.com/f", "url_hash": "f"}

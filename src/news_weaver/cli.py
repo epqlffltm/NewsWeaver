@@ -8,6 +8,7 @@ FastAPI가 아니라 CLI를 기본 진입점으로 둔다. 나중에 웹에서 �
 버튼을 붙이더라도 같은 함수를 호출하는 형태가 된다.
 """
 
+import argparse
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -18,8 +19,16 @@ from news_weaver.collectors.rss_collector import collect_all_feeds
 from news_weaver.collectors.sources import RSS_SOURCES
 from news_weaver.config import get_settings
 from news_weaver.db.article_repository import ArticleRepository
+from news_weaver.db.delivery_repository import DeliveryRepository
 from news_weaver.db.engine import get_session_factory
 from news_weaver.db.summary_repository import SummaryRepository
+from news_weaver.deliver.base import MailSender
+from news_weaver.deliver.history import (
+    collect_delivery_contents,
+    delivery_date_of,
+    exclude_delivered,
+    should_skip_delivery,
+)
 from news_weaver.deliver.render import build_subject, render_digest
 from news_weaver.deliver.smtp import SmtpMailSender
 from news_weaver.domain.article import Article
@@ -37,7 +46,8 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # 배치가 하루 실패해도 그날 기사를 놓치지 않도록 이틀치를 후보로 삼는다.
-# 건수로 제한하면 수집량이 늘 때마다 범위가 좁아져 중복 판정이 성립하지 않는다
+# 건수로 제한하면 수집량이 늘 때마다 범위가 좁아져 중복 판정이 성립하지 않는다.
+# 창이 겹쳐도 이미 보낸 기사는 발송 이력으로 걸러진다
 CANDIDATE_WINDOW_DAYS = 2
 
 # 한 번에 임베딩할 상한. 수집 규모가 커져도 배치 시간이 예측 가능하게 한다
@@ -120,12 +130,32 @@ def embed_pending_articles() -> int:
 
 
 def load_recent_articles(window_days: int) -> list[Article]:
-    """최근 수집된 기사를 선별 후보로 읽어온다."""
+    """
+    최근 수집된 기사 중 아직 보내지 않은 것을 선별 후보로 읽어온다.
+
+    후보 창이 하루보다 길어, 이력으로 거르지 않으면 어제 보낸 기사가 다시 실린다.
+    """
     since = datetime.now(UTC) - timedelta(days=window_days)
     session_factory = get_session_factory()
 
     with session_factory() as session:
-        return ArticleRepository(session).find_recent_articles(since)
+        articles = ArticleRepository(session).find_recent_articles(since)
+        delivered = DeliveryRepository(session).find_delivered_url_hashes(
+            [article.url_hash for article in articles]
+        )
+
+    return exclude_delivered(articles, delivered)
+
+
+def has_delivered_today(sent_at: datetime) -> bool:
+    """오늘(한국 시간) 이 수신자에게 이미 보냈는지 확인한다."""
+    session_factory = get_session_factory()
+
+    with session_factory() as session:
+        return DeliveryRepository(session).has_delivered_on(
+            delivery_date_of(sent_at),
+            get_settings().mail_recipient,
+        )
 
 
 def log_group_composition(group: ArticleGroup) -> None:
@@ -201,25 +231,61 @@ def summarize_selected(groups: list[ArticleGroup]) -> SummarizeReport:
     return report
 
 
-def deliver_digest(report: SummarizeReport, sent_at: datetime) -> None:
-    """요약 결과를 메일로 보낸다."""
+def deliver_digest(
+    report: SummarizeReport,
+    sent_at: datetime,
+    sender: MailSender | None = None,
+) -> str | None:
+    """
+    요약 결과를 메일로 보내고, 성공하면 제목을 반환한다.
+
+    발송기를 주입받는 이유는 테스트에서 실제 메일을 보내지 않기 위함이다.
+    실패나 발송 생략은 None으로 알려, 호출자가 이력을 남기지 않게 한다.
+    """
     if not report.summarized:
         logger.info("보낼 요약이 없어 발송을 건너뜁니다.")
-        return
+        return None
 
     subject = build_subject(sent_at, len(report.summarized))
     body = render_digest(report.summarized, sent_at)
 
-    result = SmtpMailSender().send(subject, body)
+    result = (sender or SmtpMailSender()).send(subject, body)
 
-    if result.is_sent:
-        logger.info("발송 완료: %s", subject)
-    else:
+    if not result.is_sent:
         logger.error("발송 실패: %s", result.error)
+        return None
+
+    logger.info("발송 완료: %s", subject)
+    return subject
 
 
-def run_ingest() -> None:
-    """수집부터 발송까지 한 번의 배치를 실행한다."""
+def record_delivery(report: SummarizeReport, subject: str, sent_at: datetime) -> None:
+    """
+    발송에 성공한 내용을 이력으로 남긴다.
+
+    발송 전에 기록하면 SMTP 실패 시 보내지도 않은 기사가 다음 실행에서
+    제외되므로, 반드시 성공한 뒤에 기록한다.
+    """
+    session_factory = get_session_factory()
+
+    with session_factory() as session:
+        DeliveryRepository(session).record_delivery(
+            delivery_date_of(sent_at),
+            get_settings().mail_recipient,
+            subject,
+            collect_delivery_contents(report.summarized),
+            sent_at,
+        )
+        session.commit()
+
+
+def run_ingest(force: bool = False) -> None:
+    """
+    수집부터 발송까지 한 번의 배치를 실행한다.
+
+    force가 참이면 오늘 이미 보냈더라도 다시 발송한다. 이미 보낸 기사는
+    그래도 제외되므로, 그사이 새로 들어온 기사만 실린다.
+    """
     configure_logging()
 
     started_at = datetime.now(UTC)
@@ -231,6 +297,12 @@ def run_ingest() -> None:
 
     embedded_count = embed_pending_articles()
     logger.info("임베딩 생성 %d건", embedded_count)
+
+    # 수집과 임베딩은 재실행해도 무해하므로 먼저 해 두고, 비용이 큰 요약과
+    # 발송만 건너뛴다
+    if should_skip_delivery(has_delivered_today(started_at), force):
+        logger.info("오늘 이미 발송해 건너뜁니다. 다시 보내려면 --force를 쓰세요.")
+        return
 
     candidates = load_recent_articles(CANDIDATE_WINDOW_DAYS)
     selected = select_and_group(candidates)
@@ -252,9 +324,23 @@ def run_ingest() -> None:
     for failed_title, reason in report.failures:
         logger.warning("요약 실패: %s — %s", failed_title[:40], reason)
 
-    deliver_digest(report, started_at)
+    subject = deliver_digest(report, started_at)
+    if subject is not None:
+        record_delivery(report, subject, started_at)
+
     logger.info("배치 종료")
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """명령줄 인자를 해석한다."""
+    parser = argparse.ArgumentParser(description="NewsWeaver 배치를 실행한다.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="오늘 이미 발송했어도 다시 발송한다 (이미 보낸 기사는 제외).",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    run_ingest()
+    run_ingest(force=parse_args().force)

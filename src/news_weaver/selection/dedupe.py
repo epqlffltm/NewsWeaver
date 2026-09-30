@@ -69,17 +69,16 @@ class ArticleGroup:
         return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
-def _build_similarity_map(
-    pairs: list[tuple[str, str, float]],
-) -> dict[str, set[str]]:
-    """유사 쌍 목록을 url_hash에서 유사한 상대들로 가는 사전으로 만든다."""
-    similar_to: dict[str, set[str]] = {}
+def _find_root(parent: dict[str, str], url_hash: str) -> str:
+    """Union-Find의 대표 원소를 찾는다. 경로를 압축해 다음 조회를 줄인다."""
+    root = url_hash
+    while parent[root] != root:
+        root = parent[root]
 
-    for left_hash, right_hash, _ in pairs:
-        similar_to.setdefault(left_hash, set()).add(right_hash)
-        similar_to.setdefault(right_hash, set()).add(left_hash)
+    while parent[url_hash] != root:
+        parent[url_hash], url_hash = root, parent[url_hash]
 
-    return similar_to
+    return root
 
 
 def group_similar_articles(
@@ -89,44 +88,42 @@ def group_similar_articles(
     """
     유사한 기사를 하나의 그룹으로 묶는다.
 
-    점수 높은 순으로 순회하며, 이미 만들어진 그룹의 구성원과 유사하면
-    그 그룹에 합류시킨다. 클러스터링 대신 이 방식을 쓰는 이유는 후보가
-    수십 건 규모라 결과가 같으면서 훨씬 단순하기 때문이다.
+    유사 쌍을 간선으로 보고 연결 요소(connected component)를 구한다.
+    기사를 하나씩 기존 그룹에 붙이는 방식은 입력이 C, A, B 순이고
+    A-B, B-C만 유사할 때, C와 A가 먼저 따로 그룹을 만든 뒤 B가 둘을
+    잇더라도 두 그룹이 합쳐지지 않는다. Union-Find는 간선을 모두 반영한
+    뒤 그룹을 정하므로 입력 순서와 무관하게 같은 결과가 나온다.
 
     짝이 없는 기사도 구성원이 하나인 그룹이 된다. 호출자가 단일 기사와
     묶인 기사를 나눠 처리하지 않아도 되게 하기 위함이다.
 
-    반환 순서는 입력 순서를 따른다. 보도량을 반영한 재정렬은 호출자의
-    몫이며, 그룹화 자체는 순서에 관여하지 않는다.
+    그룹 순서와 그룹 내 구성원 순서는 입력 순서를 따른다. 입력이 점수
+    순이면 각 그룹의 첫 기사가 점수 최고 기사, 즉 대표가 된다. 보도량을
+    반영한 재정렬은 호출자의 몫이다.
     """
-    similar_to = _build_similarity_map(similarity_pairs)
+    parent = {item.article.url_hash: item.article.url_hash for item in scored}
 
-    groups: list[list[ScoredArticle]] = []
-    group_index_by_hash: dict[str, int] = {}
+    for left_hash, right_hash, _ in similarity_pairs:
+        # 후보 밖의 기사가 섞인 쌍은 무시한다. 없는 원소를 만들면
+        # 후보에 없던 기사를 통해 무관한 그룹이 이어질 수 있다
+        if left_hash not in parent or right_hash not in parent:
+            continue
 
+        left_root = _find_root(parent, left_hash)
+        right_root = _find_root(parent, right_hash)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    # dict는 삽입 순서를 유지하므로, 대표 원소를 처음 만난 순서가 곧
+    # 그룹의 입력 순서가 된다
+    members_by_root: dict[str, list[ScoredArticle]] = {}
     for item in scored:
-        current_hash = item.article.url_hash
-        neighbors = similar_to.get(current_hash, set())
-
-        existing_index = next(
-            (
-                group_index_by_hash[neighbor]
-                for neighbor in neighbors
-                if neighbor in group_index_by_hash
-            ),
-            None,
-        )
-
-        if existing_index is None:
-            groups.append([item])
-            group_index_by_hash[current_hash] = len(groups) - 1
-        else:
-            groups[existing_index].append(item)
-            group_index_by_hash[current_hash] = existing_index
+        root = _find_root(parent, item.article.url_hash)
+        members_by_root.setdefault(root, []).append(item)
 
     return [
         ArticleGroup(representative=members[0], others=tuple(members[1:]))
-        for members in groups
+        for members in members_by_root.values()
     ]
 
 

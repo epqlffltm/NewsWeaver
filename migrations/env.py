@@ -4,7 +4,7 @@ from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
-from news_weaver.config import get_settings
+from news_weaver.config import get_database_url
 from news_weaver.db.tables import Base
 
 load_dotenv()
@@ -13,7 +13,9 @@ load_dotenv()
 # access to the values within the .ini file in use.
 config = context.config
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# 마이그레이션에는 DB 주소만 필요하다. 전체 설정을 읽으면 SMTP·Ollama 값까지
+# 채워야 실행되므로 DB 주소만 따로 읽는다
+config.set_main_option("sqlalchemy.url", get_database_url())
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

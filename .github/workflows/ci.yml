@@ -1,0 +1,54 @@
+# NewsWeaver/.github/workflows/ci.yml
+# 린트, 마이그레이션, 단위·통합 테스트를 실행한다.
+# 통합 테스트는 pgvector가 든 PostgreSQL 서비스를 띄워 실제 SQL을 검증한다.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: newsweaver
+          POSTGRES_PASSWORD: newsweaver
+          POSTGRES_DB: newsweaver
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U newsweaver -d newsweaver"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # 마이그레이션과 통합 테스트는 DB 주소만 필요하다
+      DATABASE_URL: postgresql+psycopg://newsweaver:newsweaver@localhost:5432/newsweaver
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Migrate
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+
+      - name: Test
+        run: uv run pytest -v

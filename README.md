@@ -10,23 +10,17 @@
 ````
 
 - **수집** — RSS 6개 소스에서 하루 약 240건
-````
-````
-
-한 줄짜리 흐름도인데, 아래 목록보다 먼저 전체 그림을 보여주는 역할입니다. 없으면 목록만 나열돼서 순서 관계가 안 보이죠.
-
-나머지는 그대로입니다.
-
-````powershell
-git add -A
-git commit -m "docs: 사건 브리핑 도입과 환경 설정을 반영해 README 갱신"
-git push
-````
-
----
-
+- **저장** — URL 정규화 후 해시로 중복을 걸러 PostgreSQL에 적재. 시각은 UTC로 통일
+- **임베딩** — 본문을 벡터로 변환해 pgvector에 저장
+- **선별** — 관심 키워드로 후보를 추린다. 범위는 건수가 아니라 시간 구간으로 자른다
+- **사건 묶기** — 유사도가 임계값 이상인 기사를 같은 사건으로 묶고, 보도량을 그룹 점수에 반영
+- **종합 요약** — 사건 그룹 단위로 로컬 LLM이 요약. 구성원·모델·프롬프트가 바뀌면 다시 생성
+- **발송** — 브리핑을 렌더링해 SMTP로 전달
 
 ## 현재 상태
+
+Phase 4까지 완료하고 개발을 종료했다. 아래 항목은 모두 동작하는 상태이며,
+추가 기능은 계획하지 않는다.
 
 | Phase | 내용 | 상태 |
 |---|---|---|
@@ -38,7 +32,9 @@ git push
 
 ### 측정된 품질
 
-라벨 60건 기준.
+라벨 60건 기준. 아래 수치는 키워드 조정에 쓴 라벨 전체로 잰 값이라
+holdout이 없고, 새 기사에서는 더 낮을 수 있다. 고정 평가셋을 내보낸 뒤
+test 분할에서 다시 측정해야 한다(아직 측정하지 않음).
 
 - **Precision@10** 0.90 — 상위 10건 중 9건이 관심 기사
 - **Recall@30** 1.00 — 관련 기사를 놓치지 않음
@@ -157,6 +153,14 @@ uv run python -m news_weaver.cli
 만든 브리핑은 건너뛴다. 모델이나 프롬프트를 바꾸거나 사건 그룹의 구성이
 달라지면 자동으로 다시 생성된다.
 
+발송에 성공하면 `deliveries` 테이블에 이력이 남는다. 같은 날(한국 시간)
+다시 실행하면 발송을 건너뛰고, 이전에 보낸 기사는 후보에서 제외된다.
+그래도 다시 보내야 하면 `--force`를 붙인다(이미 보낸 기사는 여전히 제외).
+
+```bash
+uv run python -m news_weaver.cli --force
+```
+
 ## 매일 자동 실행
 
 Windows 작업 스케줄러에 등록한다. 관리자 권한 PowerShell에서:
@@ -190,6 +194,15 @@ uv run ruff check --fix .    # 린트
 uv run pytest -v             # 테스트
 ```
 
+`integration` 마커가 붙은 테스트는 실제 PostgreSQL(pgvector)에서 Repository의
+SQL을 검증한다. 환경변수 `DATABASE_URL`이 없으면 건너뛰며, 테스트마다
+트랜잭션을 되돌리므로 데이터가 남지 않는다. CI(GitHub Actions)는
+pgvector 서비스를 띄워 마이그레이션 후 전체 테스트를 돌린다.
+
+```bash
+DATABASE_URL=postgresql+psycopg://... uv run pytest -m integration
+```
+
 ### 스크립트
 
 `scripts/`의 파일들은 용도가 둘로 나뉜다.
@@ -201,12 +214,26 @@ uv run pytest -v             # 테스트
 **평가 도구** — 선별 품질을 수치로 재는 데 쓴다.
 
 ```bash
-uv run python scripts/label_articles.py      # 정답 라벨 수집
-uv run python scripts/evaluate_selection.py  # 지표 측정
+uv run python scripts/label_articles.py                   # 정답 라벨 수집 (DB 필요)
+uv run python scripts/export_eval_set.py                  # 고정 평가셋 내보내기 (DB 필요)
+uv run python scripts/evaluate_selection.py --split dev   # 규칙 조정 중 확인
+uv run python scripts/evaluate_selection.py --split test  # 최종 1회 측정 (기본값)
 ```
 
-라벨은 `evaluation/selection_labels.json`에 누적되며 커밋한다. 코드와 함께
-버전 관리해야 "어떤 기준에서 이 점수가 나왔는지" 추적할 수 있다.
+라벨은 `evaluation/selection_labels.json`에, 라벨 붙은 기사의 제목·요약·
+출처·시각·정답·분할은 `evaluation/selection_eval.jsonl`에 담아 둘 다 커밋한다.
+평가 스크립트는 이 JSONL만 읽으므로 DB 없이 누구나 같은 숫자를 얻는다.
+
+**분할 규칙.** 기사마다 `sha256(url_hash)`의 첫 바이트를 3으로 나눈 나머지가
+0이면 test(약 1/3), 아니면 dev다. 다른 기사와 무관하게 정해져 라벨이 늘어도
+기존 기사의 분할은 바뀌지 않는다. 다만 관련 기사가 2건 이상인데 한쪽 분할에
+하나도 없으면, 다른 쪽에서 해시 순서가 가장 앞선 관련 기사 하나를 옮긴다.
+
+**운영 원칙.** 키워드·가중치 조정은 dev 결과만 보고 한다. test는 조정을 마친
+뒤 최종 한 번만 측정한다. test를 보며 고치면 test도 조정용 데이터가 된다.
+
+**k 값.** P@10, R@30은 라벨 60건일 때 정한 값이라, 분할 크기에 비례해 줄여
+쓴다(`k = round(기준 k × 건수 / 60)`, 최소 1). 실제로 쓴 k는 출력에 표시된다.
 
 ## 설계 메모
 

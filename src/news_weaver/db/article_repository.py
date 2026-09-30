@@ -162,6 +162,26 @@ class ArticleRepository:
 
         return [_to_article(row) for row in rows]
 
+    def find_articles_by_hashes(self, url_hashes: list[str]) -> list[Article]:
+        """
+        지정한 기사들을 수집 시각과 무관하게 읽어온다.
+
+        평가처럼 고정된 기사 집합을 다시 봐야 할 때 쓴다. 최근 N일로 자르면
+        실행 날짜에 따라 대상이 바뀌어 결과를 재현할 수 없다.
+        """
+        if not url_hashes:
+            return []
+
+        statement = (
+            select(ArticleRow)
+            .where(ArticleRow.url_hash.in_(url_hashes))
+            .order_by(ArticleRow.collected_at.desc(), ArticleRow.url_hash)
+        )
+
+        rows = self._session.execute(statement).scalars().all()
+
+        return [_to_article(row) for row in rows]
+
 
 def _to_row_values(article: Article) -> dict:
     """도메인 모델을 테이블에 맞는 딕셔너리로 변환한다."""
@@ -187,16 +207,3 @@ def _to_article(row: ArticleRow) -> Article:
         summary=row.summary,
     )
 
-
-def _row_to_article(row) -> Article:
-    """raw SQL 결과 행을 도메인 모델로 변환한다."""
-    return Article(
-        source_name=row.source_name,
-        title=row.title,
-        url=row.url,
-        url_hash=row.url_hash,
-        collected_at=row.collected_at,
-        published_at=row.published_at,
-        author=row.author,
-        summary=row.summary,
-    )
